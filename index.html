@@ -415,7 +415,9 @@ async function apiFetchReviews() {
     });
     if (res.status === 401) { showToast('Admin password rejected by server'); return null; }
     if (!res.ok) { console.warn('get-reviews non-200', res.status); return null; }
-    return await res.json();
+    const text = await res.text();
+    const data = JSON.parse(text);
+    return Array.isArray(data) ? data.filter(r => r && !r.init) : [];
   } catch (e) {
     console.warn('apiFetchReviews failed', e);
     return null;
