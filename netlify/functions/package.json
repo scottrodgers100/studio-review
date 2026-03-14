@@ -1,0 +1,8 @@
+{
+  "name": "studio-review-functions",
+  "version": "1.0.0",
+  "description": "Netlify functions for Studio Review System",
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0"
+  }
+}
