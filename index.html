@@ -353,8 +353,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--paper); color: var(
           <div class="pw-change-grid">
             <div class="field"><label>New Reviewer Password</label><input type="password" id="pw-reviewer-new" placeholder="New password" autocomplete="new-password"></div>
             <div class="field"><label>Confirm Reviewer Password</label><input type="password" id="pw-reviewer-confirm" placeholder="Confirm" autocomplete="new-password"></div>
-            <div class="field"><label>New Admin Password</label><input type="password" id="pw-admin-new" placeholder="New password" autocomplete="new-password"></div>
-            <div class="field"><label>Confirm Admin Password</label><input type="password" id="pw-admin-confirm" placeholder="Confirm" autocomplete="new-password"></div>
+            <div class="field" style="grid-column:1/-1"><p style="font-size:0.78rem;color:var(--muted);background:var(--warm);border:1px solid var(--border);border-radius:6px;padding:10px 13px">⚙️ The <strong>Admin password</strong> is set via the <code>ADMIN_PASSWORD</code> environment variable in Netlify and cannot be changed here. Contact your Netlify admin to update it.</p></div>
           </div>
           <div class="admin-save-bar">
             <button class="btn btn-primary btn-sm" onclick="savePasswords()">Update Passwords</button>
@@ -1532,8 +1531,6 @@ function saveSectionLabels() { saveSectionsAdmin(); } // legacy alias
 function savePasswords() {
   const rNew = document.getElementById('pw-reviewer-new').value;
   const rConf = document.getElementById('pw-reviewer-confirm').value;
-  const aNew = document.getElementById('pw-admin-new').value;
-  const aConf = document.getElementById('pw-admin-confirm').value;
   let msgs = [];
   if(rNew || rConf) {
     if(rNew !== rConf) { showToast('Reviewer passwords do not match'); return; }
@@ -1542,14 +1539,6 @@ function savePasswords() {
     msgs.push('Reviewer password updated');
     document.getElementById('pw-reviewer-new').value = '';
     document.getElementById('pw-reviewer-confirm').value = '';
-  }
-  if(aNew || aConf) {
-    if(aNew !== aConf) { showToast('Admin passwords do not match'); return; }
-    if(aNew.length < 4) { showToast('Password must be at least 4 characters'); return; }
-    setPw('admin', aNew);
-    msgs.push('Admin password updated');
-    document.getElementById('pw-admin-new').value = '';
-    document.getElementById('pw-admin-confirm').value = '';
   }
   if(msgs.length) showToast(msgs.join(' · '));
   else showToast('No changes made');
