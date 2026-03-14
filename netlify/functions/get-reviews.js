@@ -1,9 +1,8 @@
-const { getStore } = require('@netlify/blobs');
+const https = require('https');
 
-// Simple server-side password check using an env var.
-// Set ADMIN_PASSWORD in Netlify site settings → Environment variables.
-// Falls back to 'admin123' for initial setup (change it immediately!).
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+const JSONBIN_KEY = process.env.JSONBIN_MASTER_KEY;
+const JSONBIN_ID = process.env.JSONBIN_BIN_ID;
+const ADMIN_PW = process.env.ADMIN_PASSWORD || 'admin123';
 
 exports.handler = async (event) => {
   const headers = {
@@ -12,47 +11,44 @@ exports.handler = async (event) => {
     'Content-Type': 'application/json',
   };
 
-  if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers, body: '' };
-  }
+  if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers, body: '' };
+  if (event.httpMethod !== 'GET') return { statusCode: 405, headers, body: JSON.stringify({ error: 'Method not allowed' }) };
 
-  if (event.httpMethod !== 'GET') {
-    return { statusCode: 405, headers, body: JSON.stringify({ error: 'Method not allowed' }) };
-  }
-
-  // Check admin password from header
   const supplied = event.headers['x-admin-password'];
-  if (!supplied || supplied !== ADMIN_PASSWORD) {
+  if (!supplied || supplied !== ADMIN_PW) {
     return { statusCode: 401, headers, body: JSON.stringify({ error: 'Unauthorized' }) };
   }
 
   try {
-    const store = getStore('reviews');
-
-    // Get ordered index
-    let index = [];
-    try {
-      const raw = await store.get('__index__');
-      if (raw) index = JSON.parse(raw);
-    } catch (_) {}
-
-    // Fetch each review in parallel
-    const reviews = (
-      await Promise.all(
-        index.map(async (id) => {
+    const records = await new Promise((resolve, reject) => {
+      const options = {
+        hostname: 'api.jsonbin.io',
+        path: `/v3/b/${JSONBIN_ID}/latest`,
+        method: 'GET',
+        headers: {
+          'X-Master-Key': JSONBIN_KEY,
+          'X-Bin-Versioning': 'false',
+        },
+      };
+      const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
           try {
-            const raw = await store.get(String(id));
-            return raw ? JSON.parse(raw) : null;
-          } catch (_) {
-            return null;
+            const parsed = JSON.parse(data);
+            resolve(parsed.record || []);
+          } catch(e) {
+            resolve([]);
           }
-        })
-      )
-    ).filter(Boolean);
+        });
+      });
+      req.on('error', reject);
+      req.end();
+    });
 
-    return { statusCode: 200, headers, body: JSON.stringify(reviews) };
+    return { statusCode: 200, headers, body: JSON.stringify(records) };
   } catch (err) {
-    console.error('get-reviews error:', err);
-    return { statusCode: 500, headers, body: JSON.stringify({ error: 'Server error' }) };
+    console.error('get-reviews error:', err.message);
+    return { statusCode: 500, headers, body: JSON.stringify({ error: err.message }) };
   }
 };
