@@ -1,5 +1,12 @@
 [build]
   functions = "netlify/functions"
+  publish = "."
+
+[build.environment]
+  NODE_VERSION = "18"
+
+[[plugins]]
+  package = "@netlify/plugin-functions-install-core"
 
 [[headers]]
   for = "/netlify/functions/*"
