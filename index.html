@@ -380,62 +380,59 @@ body { font-family: 'DM Sans', sans-serif; background: var(--paper); color: var(
 
 <script>
 // ═══════════════════════════════════════════════════════
-// API — Netlify functions bridge
+// API — JSONBin direct storage
 // ═══════════════════════════════════════════════════════
-// Reviews are POSTed to the serverless function on submit so ALL devices
-// share the same data. Admins fetch from the API; the local localStorage
-// cache is kept as a fast fallback / offline buffer.
-const API_BASE = '/.netlify/functions';
+const JSONBIN_BIN_ID = '69b5c369b7ec241ddc6b53ae';
+const JSONBIN_API_KEY = '$2a$10$pnQVxgu6bI4CqAE0w/w9RuR356VIm7SrnTu6o4AjiRTWQ4YKidB.W';
+const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}`;
 
-// Holds the admin password for the current session so we can pass it
-// as a header to the get-reviews / delete-review functions.
 let _sessionAdminPw = null;
 
-async function apiSaveReview(rec) {
+async function jsonbinGet() {
   try {
-    const res = await fetch(`${API_BASE}/save-review`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(rec),
+    const res = await fetch(JSONBIN_URL + '/latest', {
+      headers: { 'X-Master-Key': JSONBIN_API_KEY }
     });
-    if (!res.ok) console.warn('save-review non-200', res.status);
+    if (!res.ok) return [];
+    const data = await res.json();
+    const records = data.record;
+    return Array.isArray(records) ? records.filter(r => r && !r.init) : [];
+  } catch (e) {
+    console.warn('jsonbinGet failed', e);
+    return [];
+  }
+}
+
+async function jsonbinSet(records) {
+  try {
+    const res = await fetch(JSONBIN_URL, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'X-Master-Key': JSONBIN_API_KEY },
+      body: JSON.stringify(records)
+    });
     return res.ok;
   } catch (e) {
-    console.warn('apiSaveReview failed (offline?)', e);
+    console.warn('jsonbinSet failed', e);
     return false;
   }
+}
+
+async function apiSaveReview(rec) {
+  const all = await jsonbinGet();
+  all.unshift(rec);
+  return await jsonbinSet(all);
 }
 
 async function apiFetchReviews() {
   if (!_sessionAdminPw) return null;
-  try {
-    const res = await fetch(`${API_BASE}/get-reviews`, {
-      headers: { 'x-admin-password': _sessionAdminPw },
-    });
-    if (res.status === 401) { showToast('Admin password rejected by server'); return null; }
-    if (!res.ok) { console.warn('get-reviews non-200', res.status); return null; }
-    const text = await res.text();
-    const data = JSON.parse(text);
-    return Array.isArray(data) ? data.filter(r => r && !r.init) : [];
-  } catch (e) {
-    console.warn('apiFetchReviews failed', e);
-    return null;
-  }
+  return await jsonbinGet();
 }
 
 async function apiDeleteReview(id) {
   if (!_sessionAdminPw) return false;
-  try {
-    const res = await fetch(`${API_BASE}/delete-review`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json', 'x-admin-password': _sessionAdminPw },
-      body: JSON.stringify({ id }),
-    });
-    return res.ok;
-  } catch (e) {
-    console.warn('apiDeleteReview failed', e);
-    return false;
-  }
+  const all = await jsonbinGet();
+  const filtered = all.filter(r => r.id !== id);
+  return await jsonbinSet(filtered);
 }
 
 // ═══════════════════════════════════════════════════════
