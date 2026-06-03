@@ -795,14 +795,6 @@ function toggleAnon() { anon[curType]=!anon[curType]; renderForm(); }
 
 function submitForm(e) {
   e.preventDefault();
-  // Validate required radio groups (browser can't focus hidden radio inputs)
-  const unrated = [...e.target.querySelectorAll('.rating-group[data-required="true"]')].filter(g => !g.querySelector('input[type="radio"]:checked'));
-  if(unrated.length) {
-    unrated[0].scrollIntoView({behavior:'smooth', block:'center'});
-    unrated[0].querySelectorAll('.rating-pip').forEach(p => { p.style.borderColor='#dc2626'; setTimeout(()=>p.style.borderColor='',2000); });
-    showToast('Please rate all required fields (' + unrated.length + ' unanswered)');
-    return;
-  }
   const fd = new FormData(e.target), data={};
   fd.forEach((v,k)=>data[k]=v);
   const rVals = Object.entries(data).filter(([k,v])=>k!=='overall_score'&&!isNaN(v)&&v!=='').map(([,v])=>+v);
