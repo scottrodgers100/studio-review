@@ -790,14 +790,14 @@ function renderForm() {
       <div class="card-body">
         <div class="row2">
           <div class="field"><label>Photographer / Trainee Name</label>
-            <input type="text" name="photographer_name" id="photographer_name_input" required placeholder="First Last" list="photog-name-list" autocomplete="off">
+            <input type="text" name="photographer_name" id="photographer_name_input" placeholder="First Last" list="photog-name-list" autocomplete="off">
             <datalist id="photog-name-list">${getPhotogNames().map(n=>`<option value="${h(n)}">`).join('')}</datalist>
           </div>
-          <div class="field"><label>${isP?'Job Number / ID':'Training Session ID'}</label><input type="text" name="job_id" required placeholder="${isP?'JOB-2025-0412':'TRAIN-2025-0412'}"></div>
+          <div class="field"><label>${isP?'Job Number / ID':'Training Session ID'}</label><input type="text" name="job_id" placeholder="${isP?'JOB-2025-0412':'TRAIN-2025-0412'}"></div>
         </div>
         <div class="row2">
-          <div class="field"><label>${isP?'Job Date':'Training Date'}</label><input type="date" name="job_date" required></div>
-          <div class="field"><label>${isP?'QC Reviewer':'Trainer Name'}</label><input type="text" name="reviewer_name" required placeholder="Your name"></div>
+          <div class="field"><label>${isP?'Job Date':'Training Date'}</label><input type="date" name="job_date"></div>
+          <div class="field"><label>${isP?'QC Reviewer':'Trainer Name'}</label><input type="text" name="reviewer_name" placeholder="Your name"></div>
         </div>
         <div class="toggle-row">
           <div class="toggle-info"><div class="t-title">🔒 Anonymous Submission</div><div class="t-desc">Reviewer name hidden from photographer</div></div>
@@ -818,7 +818,7 @@ function renderForm() {
     }
     if(q.t==='rating') {
       html+=`<div class="field"><label>${h(q.label)}</label>${q.hint?`<span class="hint">${h(q.hint)}</span>`:''}
-        <div class="rating-group">${[1,2,3,4,5].map(n=>`<label><input type="radio" name="${q.name}" value="${n}" required><div class="rating-pip">${n}</div></label>`).join('')}</div>
+        <div class="rating-group">${[1,2,3,4,5].map(n=>`<label><input type="radio" name="${q.name}" value="${n}"><div class="rating-pip">${n}</div></label>`).join('')}</div>
         <div class="rating-ends"><span>Poor</span><span>Excellent</span></div></div>`;
     } else if(q.t==='textarea') {
       if(inRow){html+='</div>';inRow=false;}
@@ -836,7 +836,7 @@ function renderForm() {
     <div class="card-body">
       <div class="row2">
         <div class="field"><label>Overall Score (1–10)</label>
-          <div class="rating-group">${[1,2,3,4,5,6,7,8,9,10].map(n=>`<label><input type="radio" name="overall_score" value="${n}" required><div class="rating-pip">${n}</div></label>`).join('')}</div>
+          <div class="rating-group">${[1,2,3,4,5,6,7,8,9,10].map(n=>`<label><input type="radio" name="overall_score" value="${n}"><div class="rating-pip">${n}</div></label>`).join('')}</div>
           <div class="rating-ends"><span>Poor</span><span>Outstanding</span></div>
         </div>
         <div class="field"><label>Recommended Next Action</label>
