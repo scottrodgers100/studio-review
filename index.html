@@ -247,7 +247,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--paper); color: var(
     </div>
     <div class="lock-error" id="lock-error"></div>
     <button class="lock-btn" onclick="doLogin()">Sign In</button>
-    <div class="lock-hint" id="lock-hint">Default reviewer password: <strong>studio</strong></div>
+    <div class="lock-hint" id="lock-hint"></div>
   </div>
 </div>
 
@@ -264,7 +264,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--paper); color: var(
     <button class="nav-btn active" onclick="showView('forms')">New Review</button>
     <button class="nav-btn" onclick="showView('records')">Records</button>
     <button class="nav-btn" onclick="showView('scores')">Scorecards</button>
-    <button class="nav-btn" onclick="showView('config')">Configure</button>
+    <button class="nav-btn" onclick="showView('config')" id="nav-config">Configure</button>
     <button class="nav-btn" id="nav-admin" onclick="showView('admin')" style="display:none">Admin</button>
     <span id="session-badge" style="margin-left:6px"></span>
     <button class="nav-btn" onclick="doLogout()" style="opacity:0.55;margin-left:4px">Sign Out</button>
@@ -349,12 +349,11 @@ body { font-family: 'DM Sans', sans-serif; background: var(--paper); color: var(
 
         <div class="admin-section">
           <div class="admin-section-title">🔑 Change Passwords</div>
-          <p style="font-size:0.78rem;color:var(--muted);margin-bottom:14px">Passwords are stored in browser storage on this device. Share them verbally with staff.</p>
+          <p style="font-size:0.78rem;color:var(--muted);margin-bottom:14px">The <strong>Reviewer password</strong> is stored in browser storage — share it verbally with staff. The <strong>Admin password</strong> must also match the <code>ADMIN_PASSWORD</code> environment variable set in Netlify (Site Settings → Environment Variables) — otherwise server data won't load. Update both together.</p>
           <div class="pw-change-grid">
             <div class="field"><label>New Reviewer Password</label><input type="password" id="pw-reviewer-new" placeholder="New password" autocomplete="new-password"></div>
             <div class="field"><label>Confirm Reviewer Password</label><input type="password" id="pw-reviewer-confirm" placeholder="Confirm" autocomplete="new-password"></div>
-            <div class="field"><label>New Admin Password</label><input type="password" id="pw-admin-new" placeholder="New password" autocomplete="new-password"></div>
-            <div class="field"><label>Confirm Admin Password</label><input type="password" id="pw-admin-confirm" placeholder="Confirm" autocomplete="new-password"></div>
+            <div class="field" style="grid-column:1/-1"><p style="font-size:0.78rem;color:var(--muted);background:var(--warm);border:1px solid var(--border);border-radius:6px;padding:10px 13px">⚙️ The <strong>Admin password</strong> is set via the <code>ADMIN_PASSWORD</code> environment variable in Netlify and cannot be changed here. Contact your Netlify admin to update it.</p></div>
           </div>
           <div class="admin-save-bar">
             <button class="btn btn-primary btn-sm" onclick="savePasswords()">Update Passwords</button>
@@ -380,6 +379,65 @@ body { font-family: 'DM Sans', sans-serif; background: var(--paper); color: var(
 <div class="toast" id="toast"><span style="color:#4ade80">✓</span><span id="toast-msg"></span></div>
 
 <script>
+// ═══════════════════════════════════════════════════════
+// API — Netlify functions bridge
+// ═══════════════════════════════════════════════════════
+// Reviews are POSTed to the serverless function on submit so ALL devices
+// share the same data. Admins fetch from the API; the local localStorage
+// cache is kept as a fast fallback / offline buffer.
+const API_BASE = '/.netlify/functions';
+
+// Holds the admin password for the current session so we can pass it
+// as a header to the get-reviews / delete-review functions.
+let _sessionAdminPw = null;
+
+async function apiSaveReview(rec) {
+  try {
+    const res = await fetch(`${API_BASE}/save-review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rec),
+    });
+    if (!res.ok) console.warn('save-review non-200', res.status);
+    return res.ok;
+  } catch (e) {
+    console.warn('apiSaveReview failed (offline?)', e);
+    return false;
+  }
+}
+
+async function apiFetchReviews() {
+  if (!_sessionAdminPw) return null;
+  try {
+    const res = await fetch(`${API_BASE}/get-reviews`, {
+      headers: { 'x-admin-password': _sessionAdminPw },
+    });
+    if (res.status === 401) { showToast('Admin password rejected by server'); return null; }
+    if (!res.ok) { console.warn('get-reviews non-200', res.status); return null; }
+    const text = await res.text();
+    const data = JSON.parse(text);
+    return Array.isArray(data) ? data.filter(r => r && !r.init) : [];
+  } catch (e) {
+    console.warn('apiFetchReviews failed', e);
+    return null;
+  }
+}
+
+async function apiDeleteReview(id) {
+  if (!_sessionAdminPw) return false;
+  try {
+    const res = await fetch(`${API_BASE}/delete-review`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', 'x-admin-password': _sessionAdminPw },
+      body: JSON.stringify({ id }),
+    });
+    return res.ok;
+  } catch (e) {
+    console.warn('apiDeleteReview failed', e);
+    return false;
+  }
+}
+
 // ═══════════════════════════════════════════════════════
 // DEFAULT QUESTION DEFINITIONS
 // ═══════════════════════════════════════════════════════
@@ -653,6 +711,13 @@ function getQs(type, role) {
 function saveQs(type, role, qs) { localStorage.setItem(`qs_${type}_${role}`, JSON.stringify(qs)); }
 function getRecords() { try { return JSON.parse(localStorage.getItem('studio_reviews')||'[]'); } catch(e) { return []; } }
 function saveRecords(r) { localStorage.setItem('studio_reviews', JSON.stringify(r)); }
+function getPhotogNames() { try { return JSON.parse(localStorage.getItem('photog_names')||'[]'); } catch(e) { return []; } }
+function savePhotogName(name) {
+  const trimmed = name.trim();
+  if(!trimmed) return;
+  const names = getPhotogNames();
+  if(!names.includes(trimmed)) { names.push(trimmed); names.sort(); localStorage.setItem('photog_names', JSON.stringify(names)); }
+}
 function getPw(role) { return localStorage.getItem('pw_'+role) || (role==='admin' ? 'admin123' : 'studio'); }
 function setPw(role, pw) { localStorage.setItem('pw_'+role, pw); }
 function getRoleNames() { return buildRolesMap(); }
@@ -724,7 +789,10 @@ function renderForm() {
       <div class="card-header"><span class="card-header-title">Review Details</span><span class="card-header-meta">Required</span></div>
       <div class="card-body">
         <div class="row2">
-          <div class="field"><label>Photographer / Trainee Name</label><input type="text" name="photographer_name" required placeholder="First Last"></div>
+          <div class="field"><label>Photographer / Trainee Name</label>
+            <input type="text" name="photographer_name" id="photographer_name_input" required placeholder="First Last" list="photog-name-list" autocomplete="off">
+            <datalist id="photog-name-list">${getPhotogNames().map(n=>`<option value="${h(n)}">`).join('')}</datalist>
+          </div>
           <div class="field"><label>${isP?'Job Number / ID':'Training Session ID'}</label><input type="text" name="job_id" required placeholder="${isP?'JOB-2025-0412':'TRAIN-2025-0412'}"></div>
         </div>
         <div class="row2">
@@ -750,7 +818,7 @@ function renderForm() {
     }
     if(q.t==='rating') {
       html+=`<div class="field"><label>${h(q.label)}</label>${q.hint?`<span class="hint">${h(q.hint)}</span>`:''}
-        <div class="rating-group" data-required="true">${[1,2,3,4,5].map(n=>`<label><input type="radio" name="${q.name}" value="${n}"><div class="rating-pip">${n}</div></label>`).join('')}</div>
+        <div class="rating-group">${[1,2,3,4,5].map(n=>`<label><input type="radio" name="${q.name}" value="${n}" required><div class="rating-pip">${n}</div></label>`).join('')}</div>
         <div class="rating-ends"><span>Poor</span><span>Excellent</span></div></div>`;
     } else if(q.t==='textarea') {
       if(inRow){html+='</div>';inRow=false;}
@@ -768,7 +836,7 @@ function renderForm() {
     <div class="card-body">
       <div class="row2">
         <div class="field"><label>Overall Score (1–10)</label>
-          <div class="rating-group" data-required="true">${[1,2,3,4,5,6,7,8,9,10].map(n=>`<label><input type="radio" name="overall_score" value="${n}"><div class="rating-pip">${n}</div></label>`).join('')}</div>
+          <div class="rating-group">${[1,2,3,4,5,6,7,8,9,10].map(n=>`<label><input type="radio" name="overall_score" value="${n}" required><div class="rating-pip">${n}</div></label>`).join('')}</div>
           <div class="rating-ends"><span>Poor</span><span>Outstanding</span></div>
         </div>
         <div class="field"><label>Recommended Next Action</label>
@@ -800,16 +868,38 @@ function submitForm(e) {
   const rVals = Object.entries(data).filter(([k,v])=>k!=='overall_score'&&!isNaN(v)&&v!=='').map(([,v])=>+v);
   const avg = rVals.length ? +(rVals.reduce((a,b)=>a+b,0)/rVals.length).toFixed(2) : null;
   const rec = {id:Date.now(),type:curType,role:curRole,anonymous:anon[curType],avg_rating:avg,submitted_at:new Date().toISOString(),...data,reviewer_name:anon[curType]?'Anonymous':data.reviewer_name};
+  // Save locally as before
   const all = getRecords(); all.unshift(rec); saveRecords(all);
+  savePhotogName(data.photographer_name);
   e.target.reset();
   showToast(`${ROLES[curRole]} ${curType==='prod'?'production':'trainer'} review submitted`);
+  // Also push to server (fire-and-forget; local copy is the fallback)
+  apiSaveReview(rec).then(ok => {
+    if (!ok) showToast('\u26a0\ufe0f Saved locally \u2014 server sync failed');
+  });
 }
 
 // ═══════════════════════════════════════════════════════
 // RECORDS
 // ═══════════════════════════════════════════════════════
 function renderRecords() {
-  const all = getRecords();
+  // Admins fetch from the server so they see everyone's submissions
+  if (sessionRole === 'admin') {
+    const el = document.getElementById('records-list');
+    el.innerHTML = `<div style="text-align:center;padding:32px;color:var(--muted);font-size:0.85rem">⏳ Loading reviews from server…</div>`;
+    apiFetchReviews().then(serverData => {
+      if (serverData && serverData.length > 0) {
+        // Merge server data into local storage so Scorecards also reflect it
+        saveRecords(serverData);
+      }
+      _renderRecordsList(serverData || getRecords());
+    });
+    return;
+  }
+  _renderRecordsList(getRecords());
+}
+
+function _renderRecordsList(all) {
   const photogs = [...new Set(all.map(r=>r.photographer_name).filter(Boolean))].sort();
   const pfEl = document.getElementById('rf-photog');
   const cur = pfEl.value;
@@ -841,7 +931,18 @@ function showDetail(id) {
 }
 
 function clearAll() {
-  if(confirm('Delete ALL review records? This cannot be undone.')) { localStorage.removeItem('studio_reviews'); renderRecords(); }
+  if(!confirm('Delete ALL review records from the server and this device? This cannot be undone.')) return;
+  const all = getRecords();
+  localStorage.removeItem('studio_reviews');
+  if(sessionRole === 'admin' && all.length) {
+    showToast('Deleting all records from server…');
+    Promise.all(all.map(r => apiDeleteReview(r.id))).then(() => {
+      showToast('All records deleted');
+      renderRecords();
+    });
+  } else {
+    renderRecords();
+  }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -849,6 +950,19 @@ function clearAll() {
 // ═══════════════════════════════════════════════════════
 function renderScores() {
   if(scorecardName) { renderPhotogDetail(scorecardName); return; }
+  if(sessionRole === 'admin') {
+    const el = document.getElementById('scores-container');
+    el.innerHTML = `<div style="text-align:center;padding:32px;color:var(--muted);font-size:0.85rem">⏳ Loading scorecards from server…</div>`;
+    apiFetchReviews().then(serverData => {
+      if(serverData && serverData.length > 0) saveRecords(serverData);
+      _renderScoresList();
+    });
+    return;
+  }
+  _renderScoresList();
+}
+
+function _renderScoresList() {
   const el=document.getElementById('scores-container');
   const all=getRecords();
   const photogs=[...new Set(all.map(r=>r.photographer_name).filter(Boolean))].sort();
@@ -1088,9 +1202,7 @@ function setLockRole(role) {
   document.getElementById('tab-reviewer').classList.toggle('active', role==='reviewer');
   document.getElementById('tab-admin').classList.toggle('active', role==='admin');
   document.getElementById('lock-label').textContent = role==='admin' ? 'Admin Password' : 'Reviewer Password';
-  document.getElementById('lock-hint').innerHTML = role==='admin'
-    ? 'Default admin password: <strong>admin123</strong>'
-    : 'Default reviewer password: <strong>studio</strong>';
+  document.getElementById('lock-hint').innerHTML = '';
   document.getElementById('lock-error').textContent = '';
   document.getElementById('lock-pw').value = '';
 }
@@ -1100,9 +1212,12 @@ function doLogin() {
   const correct = getPw(lockRole);
   if(pw === correct) {
     sessionRole = lockRole;
+    // Capture admin password for API calls
+    if(lockRole === 'admin') _sessionAdminPw = pw;
     document.getElementById('lock-screen').style.display = 'none';
     // Show admin nav if admin
     document.getElementById('nav-admin').style.display = sessionRole==='admin' ? '' : 'none';
+    document.getElementById('nav-config').style.display = sessionRole==='admin' ? '' : 'none';
     // Session badge
     const badge = document.getElementById('session-badge');
     badge.innerHTML = `<span class="session-badge session-${sessionRole}">${sessionRole==='admin'?'🔐 Admin':'👤 Reviewer'}</span>`;
@@ -1120,6 +1235,7 @@ function doLogin() {
 
 function doLogout() {
   sessionRole = null;
+  _sessionAdminPw = null;
   lockRole = 'reviewer';
   document.getElementById('lock-screen').style.display = 'flex';
   document.getElementById('lock-pw').value = '';
@@ -1415,8 +1531,6 @@ function saveSectionLabels() { saveSectionsAdmin(); } // legacy alias
 function savePasswords() {
   const rNew = document.getElementById('pw-reviewer-new').value;
   const rConf = document.getElementById('pw-reviewer-confirm').value;
-  const aNew = document.getElementById('pw-admin-new').value;
-  const aConf = document.getElementById('pw-admin-confirm').value;
   let msgs = [];
   if(rNew || rConf) {
     if(rNew !== rConf) { showToast('Reviewer passwords do not match'); return; }
@@ -1425,14 +1539,6 @@ function savePasswords() {
     msgs.push('Reviewer password updated');
     document.getElementById('pw-reviewer-new').value = '';
     document.getElementById('pw-reviewer-confirm').value = '';
-  }
-  if(aNew || aConf) {
-    if(aNew !== aConf) { showToast('Admin passwords do not match'); return; }
-    if(aNew.length < 4) { showToast('Password must be at least 4 characters'); return; }
-    setPw('admin', aNew);
-    msgs.push('Admin password updated');
-    document.getElementById('pw-admin-new').value = '';
-    document.getElementById('pw-admin-confirm').value = '';
   }
   if(msgs.length) showToast(msgs.join(' · '));
   else showToast('No changes made');
