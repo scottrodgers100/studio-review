@@ -384,7 +384,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--paper); color: var(
 // ═══════════════════════════════════════════════════════
 const JSONBIN_BIN_ID = '69b5c369b7ec241ddc6b53ae';
 const JSONBIN_API_KEY = '$2a$10$pnQVxgu6bI4CqAE0w/w9RuR356VIm7SrnTu6o4AjiRTWQ4YKidB.W';
-const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}`;
+const JSONBIN_URL = 'https://api.jsonbin.io/v3/b/' + JSONBIN_BIN_ID;
 
 let _sessionAdminPw = null;
 
@@ -420,19 +420,23 @@ async function jsonbinSet(records) {
 async function apiSaveReview(rec) {
   const all = await jsonbinGet();
   all.unshift(rec);
-  return await jsonbinSet(all);
+  const ok = await jsonbinSet(all);
+  if (ok) saveRecords(all); // keep local cache in sync
+  return ok;
 }
 
 async function apiFetchReviews() {
-  if (!_sessionAdminPw) return null;
-  return await jsonbinGet();
+  const records = await jsonbinGet();
+  if (records.length > 0) saveRecords(records); // sync local cache
+  return records;
 }
 
 async function apiDeleteReview(id) {
-  if (!_sessionAdminPw) return false;
   const all = await jsonbinGet();
-  const filtered = all.filter(r => r.id !== id);
-  return await jsonbinSet(filtered);
+  const filtered = all.filter(r => String(r.id) !== String(id));
+  const ok = await jsonbinSet(filtered);
+  if (ok) saveRecords(filtered);
+  return ok;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -865,14 +869,15 @@ function submitForm(e) {
   const rVals = Object.entries(data).filter(([k,v])=>k!=='overall_score'&&!isNaN(v)&&v!=='').map(([,v])=>+v);
   const avg = rVals.length ? +(rVals.reduce((a,b)=>a+b,0)/rVals.length).toFixed(2) : null;
   const rec = {id:Date.now(),type:curType,role:curRole,anonymous:anon[curType],avg_rating:avg,submitted_at:new Date().toISOString(),...data,reviewer_name:anon[curType]?'Anonymous':data.reviewer_name};
-  // Save locally as before
-  const all = getRecords(); all.unshift(rec); saveRecords(all);
   savePhotogName(data.photographer_name);
-  e.target.reset();
-  showToast(`${ROLES[curRole]} ${curType==='prod'?'production':'trainer'} review submitted`);
-  // Also push to server (fire-and-forget; local copy is the fallback)
+  showToast('Saving…');
   apiSaveReview(rec).then(ok => {
-    if (!ok) showToast('\u26a0\ufe0f Saved locally \u2014 server sync failed');
+    if (ok) {
+      showToast(ROLES[curRole] + ' ' + (curType==='prod'?'production':'trainer') + ' review submitted');
+      e.target.reset();
+    } else {
+      showToast('⚠️ Save failed — check your connection');
+    }
   });
 }
 
@@ -880,20 +885,11 @@ function submitForm(e) {
 // RECORDS
 // ═══════════════════════════════════════════════════════
 function renderRecords() {
-  // Admins fetch from the server so they see everyone's submissions
-  if (sessionRole === 'admin') {
-    const el = document.getElementById('records-list');
-    el.innerHTML = `<div style="text-align:center;padding:32px;color:var(--muted);font-size:0.85rem">⏳ Loading reviews from server…</div>`;
-    apiFetchReviews().then(serverData => {
-      if (serverData && serverData.length > 0) {
-        // Merge server data into local storage so Scorecards also reflect it
-        saveRecords(serverData);
-      }
-      _renderRecordsList(serverData || getRecords());
-    });
-    return;
-  }
-  _renderRecordsList(getRecords());
+  const el = document.getElementById('records-list');
+  el.innerHTML = '<div style="text-align:center;padding:32px;color:var(--muted);font-size:0.85rem">⏳ Loading reviews…</div>';
+  apiFetchReviews().then(data => {
+    _renderRecordsList(data && data.length ? data : getRecords());
+  });
 }
 
 function _renderRecordsList(all) {
@@ -947,16 +943,9 @@ function clearAll() {
 // ═══════════════════════════════════════════════════════
 function renderScores() {
   if(scorecardName) { renderPhotogDetail(scorecardName); return; }
-  if(sessionRole === 'admin') {
-    const el = document.getElementById('scores-container');
-    el.innerHTML = `<div style="text-align:center;padding:32px;color:var(--muted);font-size:0.85rem">⏳ Loading scorecards from server…</div>`;
-    apiFetchReviews().then(serverData => {
-      if(serverData && serverData.length > 0) saveRecords(serverData);
-      _renderScoresList();
-    });
-    return;
-  }
-  _renderScoresList();
+  const scEl = document.getElementById('scores-container');
+  scEl.innerHTML = '<div style="text-align:center;padding:32px;color:var(--muted);font-size:0.85rem">⏳ Loading scorecards…</div>';
+  apiFetchReviews().then(() => _renderScoresList());
 }
 
 function _renderScoresList() {
