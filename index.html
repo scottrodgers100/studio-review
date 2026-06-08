@@ -306,7 +306,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--paper); color: var(
         <div class="page-header">
           <div class="eyebrow configure">⚙ Configure</div>
           <div class="page-title">Question Editor</div>
-          <div class="page-subtitle">Edit, reorder, add or remove questions for any review form. Edit questions, then click Save to Server to publish changes to all reviewers.</div>
+          <div class="page-subtitle">Edit, reorder, add or remove questions for any review form. Changes save automatically.</div>
         </div>
         <div class="config-tabs" id="config-tabs"></div>
         <div id="config-editor"></div>
@@ -396,8 +396,7 @@ async function jsonbinGet() {
     if (!res.ok) return [];
     const data = await res.json();
     const records = data.record;
-    // Filter out init sentinel AND config record
-    return Array.isArray(records) ? records.filter(r => r && !r.init && r.__type !== '__config__') : [];
+    return Array.isArray(records) ? records.filter(r => r && !r.init) : [];
   } catch (e) {
     console.warn('jsonbinGet failed', e);
     return [];
@@ -419,45 +418,25 @@ async function jsonbinSet(records) {
 }
 
 async function apiSaveReview(rec) {
-  // Get raw bin contents (including config record) so we don't overwrite it
-  const raw = await _jsonbinGetRaw();
-  const withoutInit = raw.filter(r => r && !r.init);
-  withoutInit.unshift(rec);
-  const ok = await jsonbinSet(withoutInit);
-  if (ok) {
-    const reviews = withoutInit.filter(r => r.__type !== '__config__');
-    saveRecords(reviews);
-  }
+  const all = await jsonbinGet();
+  all.unshift(rec);
+  const ok = await jsonbinSet(all);
+  if (ok) saveRecords(all); // keep local cache in sync
   return ok;
 }
 
 async function apiFetchReviews() {
   const records = await jsonbinGet();
-  if (records.length > 0) saveRecords(records);
+  if (records.length > 0) saveRecords(records); // sync local cache
   return records;
 }
 
 async function apiDeleteReview(id) {
-  const raw = await _jsonbinGetRaw();
-  const filtered = raw.filter(r => r && !r.init && String(r.id) !== String(id));
+  const all = await jsonbinGet();
+  const filtered = all.filter(r => String(r.id) !== String(id));
   const ok = await jsonbinSet(filtered);
-  if (ok) {
-    const reviews = filtered.filter(r => r.__type !== '__config__');
-    saveRecords(reviews);
-  }
+  if (ok) saveRecords(filtered);
   return ok;
-}
-
-// Raw fetch — returns everything including config record
-async function _jsonbinGetRaw() {
-  try {
-    const res = await fetch(JSONBIN_URL + '/latest', {
-      headers: { 'X-Master-Key': JSONBIN_API_KEY }
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return Array.isArray(data.record) ? data.record.filter(r => r && !r.init) : [];
-  } catch(e) { return []; }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -744,10 +723,12 @@ function getPw(role) { return localStorage.getItem('pw_'+role) || (role==='admin
 function setPw(role, pw) { localStorage.setItem('pw_'+role, pw); }
 function getRoleNames() { return buildRolesMap(); }
 function saveRoleNames(names) {
+  // merge new labels into the role list
   const list = getRoleList();
   list.forEach(r => { if(names[r.key]) r.label = names[r.key]; });
   saveRoleList(list);
 }
+// Sections: array of {key, label} — roles reference a section key
 const SECTIONS_DEFAULT = [
   {key:'prod',  label:'Production Reviews'},
   {key:'train', label:'Trainer Reviews'},
@@ -765,8 +746,8 @@ let anon = {prod:true, train:true};
 let cfgType = 'prod', cfgRole = 'job-manager';
 let scorecardName = null;
 let dragIdx = null;
-let sessionRole = null;
-let lockRole = 'reviewer';
+let sessionRole = null; // 'reviewer' or 'admin'
+let lockRole = 'reviewer'; // which tab is active on lock screen
 
 // ═══════════════════════════════════════════════════════
 // NAVIGATION
@@ -931,7 +912,7 @@ function _renderRecordsList(all) {
 
 function showDetail(id) {
   const r = getRecords().find(x=>x.id===id); if(!r) return;
-  const skip=['id','type','role','anonymous','submitted_at','avg_rating','__type'];
+  const skip=['id','type','role','anonymous','submitted_at','avg_rating'];
   const nice={photographer_name:'Photographer',job_id:'Job ID',job_date:'Date',reviewer_name:'Reviewer',overall_score:'Overall Score',next_action:'Next Action'};
   const rows=Object.entries(r).filter(([k])=>!skip.includes(k)&&r[k]).map(([k,v])=>{
     const lbl=nice[k]||k.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
@@ -944,16 +925,17 @@ function showDetail(id) {
 
 function clearAll() {
   if(!confirm('Delete ALL review records from the server and this device? This cannot be undone.')) return;
-  showToast('Deleting all records…');
-  _jsonbinGetRaw().then(raw => {
-    // Keep config record, remove reviews
-    const cfgOnly = raw.filter(r => r && r.__type === '__config__');
-    jsonbinSet(cfgOnly.length ? cfgOnly : []).then(() => {
-      localStorage.removeItem('studio_reviews');
+  const all = getRecords();
+  localStorage.removeItem('studio_reviews');
+  if(sessionRole === 'admin' && all.length) {
+    showToast('Deleting all records from server…');
+    Promise.all(all.map(r => apiDeleteReview(r.id))).then(() => {
       showToast('All records deleted');
       renderRecords();
     });
-  });
+  } else {
+    renderRecords();
+  }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1010,6 +992,7 @@ function renderPhotogDetail(name) {
   const trendStr=trend>0.2?`↑ Improving (+${trend.toFixed(1)})`:trend<-0.2?`↓ Declining (${trend.toFixed(1)})`:'→ Stable';
   const tc=trend>0.2?'var(--success)':trend<-0.2?'#dc2626':'var(--muted)';
 
+  // Per-metric breakdown
   const mTot={}, mCnt={}, mLbl={};
   for(const r of all) {
     const qs=getQs(r.type,r.role);
@@ -1023,6 +1006,8 @@ function renderPhotogDetail(name) {
     }
   }
   const metrics=Object.keys(mTot).map(k=>({name:k,label:mLbl[k],avg:mTot[k]/mCnt[k],count:mCnt[k]})).sort((a,b)=>a.avg-b.avg);
+
+  // Sparkline (chronological order = reversed)
   const spark=[...sc].reverse();
 
   let html=`<button class="back-btn" onclick="backScores()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>All Photographers</button>
@@ -1038,10 +1023,12 @@ function renderPhotogDetail(name) {
     <div class="big-stat"><div class="big-val">${sc.length?sc[0].toFixed(1):'—'}</div><div class="big-label">Most Recent</div></div>
   </div>`;
 
+  // Score trend sparkline
   if(spark.length>1) {
     html+=`<div class="card"><div class="card-header"><span class="card-header-title">Score Trend</span><span class="card-header-meta">Oldest → Most Recent</span></div><div style="padding:14px 18px">${buildSparkline(spark)}</div></div>`;
   }
 
+  // By role
   const byRole={};
   for(const r of all){if(!byRole[r.role])byRole[r.role]=[];const s=+(r.overall_score||r.avg_rating||0);if(s>0)byRole[r.role].push(s);}
   const roleRows=Object.entries(byRole).map(([role,ss])=>{
@@ -1051,6 +1038,7 @@ function renderPhotogDetail(name) {
   }).join('');
   html+=`<div class="card"><div class="card-header"><span class="card-header-title">By Role</span></div><div style="padding:4px 0"><table class="metric-table" style="margin:0 16px;width:calc(100% - 32px)"><thead><tr><th>Role</th><th>Reviews</th><th>Avg Score</th></tr></thead><tbody>${roleRows}</tbody></table></div></div>`;
 
+  // Metrics
   if(metrics.length) {
     const mRows=metrics.map(m=>{
       const cls=m.avg>=4?'good':m.avg>=3?'mid':'low';
@@ -1059,6 +1047,7 @@ function renderPhotogDetail(name) {
     html+=`<div class="card"><div class="card-header"><span class="card-header-title">Metric Breakdown</span><span class="card-header-meta">Sorted low → high · All roles combined</span></div><div style="padding:4px 0"><table class="metric-table" style="margin:0 16px;width:calc(100% - 32px)"><thead><tr><th>Metric</th><th>Count</th><th>Avg (÷5)</th></tr></thead><tbody>${mRows}</tbody></table></div></div>`;
   }
 
+  // Recent reviews
   html+=`<div style="margin-top:4px"><div style="font-weight:600;font-size:0.9rem;margin-bottom:10px">Review History</div>`;
   all.slice(0,12).forEach(r=>{
     html+=`<div class="record-card" onclick="showDetail(${r.id})">
@@ -1093,6 +1082,7 @@ function buildSparkline(data) {
 // ═══════════════════════════════════════════════════════
 // CONFIGURE
 // ═══════════════════════════════════════════════════════
+// CFG_TABS is now dynamic — built from role list
 function getCfgTabs() {
   return getRoleList().flatMap(r => [
     {type:'prod', role:r.key, label:'Prod: '+r.label.substring(0,8)},
@@ -1137,7 +1127,7 @@ function renderQEditor() {
       </div>
     </div>`;
   });
-  html+=`</div><p style="font-size:0.72rem;color:var(--muted);margin-top:10px">Drag to reorder · Edit questions, then click Save to Server to publish changes to all reviewers.</p>`;
+  html+=`</div><p style="font-size:0.72rem;color:var(--muted);margin-top:10px">Drag to reorder · Changes save automatically to browser storage.</p>`;
   document.getElementById('config-editor').innerHTML=html;
 }
 
@@ -1208,12 +1198,16 @@ function doLogin() {
   const correct = getPw(lockRole);
   if(pw === correct) {
     sessionRole = lockRole;
+    // Capture admin password for API calls
     if(lockRole === 'admin') _sessionAdminPw = pw;
     document.getElementById('lock-screen').style.display = 'none';
+    // Show admin nav if admin
     document.getElementById('nav-admin').style.display = sessionRole==='admin' ? '' : 'none';
     document.getElementById('nav-config').style.display = sessionRole==='admin' ? '' : 'none';
+    // Session badge
     const badge = document.getElementById('session-badge');
     badge.innerHTML = `<span class="session-badge session-${sessionRole}">${sessionRole==='admin'?'🔐 Admin':'👤 Reviewer'}</span>`;
+    // Apply saved role names
     ROLES = buildRolesMap();
     updateSidebarLabels();
     if(sessionRole==='admin') renderAdminPanel();
@@ -1236,15 +1230,21 @@ function doLogout() {
 }
 
 // ═══════════════════════════════════════════════════════
-// SIDEBAR
+// SIDEBAR — fully dynamic, section-aware
 // ═══════════════════════════════════════════════════════
 function updateSidebarLabels() {
   const list = getRoleList();
   const sections = getSections();
   const activeId = 'sb-'+curType+'-'+curRole;
+
+  // Group roles by section key — for prod use r.section, for train use r.trainSection
+  // If a role has no section assigned, put it under the first section
   const firstSec = sections[0]?.key || 'prod';
+
+  // Build section → roles maps
   const prodMap = {}, trainMap = {};
   sections.forEach(s => { prodMap[s.key] = []; trainMap[s.key] = []; });
+
   list.forEach(r => {
     const ps = r.section || firstSec;
     const ts = r.trainSection || r.section || firstSec;
@@ -1253,12 +1253,15 @@ function updateSidebarLabels() {
     prodMap[ps].push(r);
     trainMap[ts].push(r);
   });
+
   let html = '';
   let isFirst = true;
   sections.forEach(sec => {
     const prodRoles = prodMap[sec.key] || [];
     const trainRoles = trainMap[sec.key] || [];
     if(!prodRoles.length && !trainRoles.length) return;
+
+    // Production roles in this section
     if(prodRoles.length) {
       html += `<div class="sidebar-label"${!isFirst?' style="margin-top:12px"':''}>${h(sec.label)}</div>`;
       isFirst = false;
@@ -1270,6 +1273,8 @@ function updateSidebarLabels() {
         </button>`;
       });
     }
+
+    // Trainer roles in this section — only if different from prod assignment
     if(trainRoles.length) {
       const trainLabel = sec.label.replace(/Production/i,'Trainer').replace(/Prod\b/i,'Train');
       const trainSecLabel = trainLabel === sec.label ? sec.label + ' (Trainer)' : trainLabel;
@@ -1283,6 +1288,8 @@ function updateSidebarLabels() {
       });
     }
   });
+
+  // Update Records role filter
   const rfRole = document.getElementById('rf-role');
   if(rfRole) {
     const cur = rfRole.value;
@@ -1384,6 +1391,7 @@ function addNewRole() {
   const label = document.getElementById('new-role-label').value.trim();
   if(!label) { showToast('Enter a role name first'); return; }
   const list = getRoleList();
+  // Generate a slug key
   const key = label.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') + '-' + Date.now().toString(36);
   const idx = list.length % PALETTE.length;
   list.push({key, label, color: PALETTE[idx], trainColor: TRAIN_PALETTE[idx]});
@@ -1400,6 +1408,7 @@ function deleteRole(i) {
   if(!confirm(`Remove "${role.label}" from the sidebar?\n\nExisting reviews for this role are kept in Records.`)) return;
   list.splice(i, 1);
   saveRoleList(list);
+  // If currently viewing this role, switch to first available
   if(curRole === role.key) { curRole = list[0]?.key || 'job-manager'; renderForm(); }
   updateSidebarLabels();
   renderAdminPanel();
@@ -1416,6 +1425,7 @@ function resetRoleNames() {
   }
 }
 
+// ── SECTION MANAGEMENT ──
 let secDragIdx = null;
 
 function renderSectionEditor() {
@@ -1452,7 +1462,7 @@ function addNewSection() {
   saveSections(sec);
   document.getElementById('new-section-label').value = '';
   renderSectionEditor();
-  renderAdminPanel();
+  renderAdminPanel(); // refresh role section dropdowns
   showToast(`"${label}" section added`);
 }
 
@@ -1463,6 +1473,7 @@ function deleteSection(i) {
   if(!confirm(`Remove section "${s.label}"?\n\nRoles assigned to it will move to the first remaining section.`)) return;
   sec.splice(i, 1);
   saveSections(sec);
+  // Reassign any roles in the deleted section to the first remaining section
   const list = getRoleList();
   const firstKey = sec[0].key;
   list.forEach(r => {
@@ -1476,6 +1487,7 @@ function deleteSection(i) {
 }
 
 function saveSectionsAdmin() {
+  // Read current label inputs
   const sec = getSections();
   document.querySelectorAll('.role-edit-input[data-secidx]').forEach(inp => {
     const idx = +inp.getAttribute('data-secidx');
@@ -1490,6 +1502,7 @@ function saveSectionsAdmin() {
 function resetSections() {
   if(confirm('Reset sections to defaults (Production Reviews + Trainer Reviews)?')) {
     localStorage.removeItem('sidebar_sections');
+    // Also reset role section assignments
     const list = getRoleList();
     list.forEach(r => { r.section='prod'; r.trainSection='train'; });
     saveRoleList(list);
@@ -1499,7 +1512,7 @@ function resetSections() {
   }
 }
 
-function saveSectionLabels() { saveSectionsAdmin(); }
+function saveSectionLabels() { saveSectionsAdmin(); } // legacy alias
 
 function savePasswords() {
   const rNew = document.getElementById('pw-reviewer-new').value;
@@ -1521,252 +1534,6 @@ function savePasswords() {
 ROLES = buildRolesMap();
 updateSidebarLabels();
 renderForm();
-</script>
-
-<!-- ═══════════════════════════════════════════════════
-     SERVER-SIDE CONFIG SYNC
-     Stores question sets, roles, and sections as a special
-     record in the JSONBin so all devices share the same config.
-     Admin edits push to server; all users pull on login.
-     ═══════════════════════════════════════════════════ -->
-<script>
-const CFG_RECORD_TYPE = '__config__';
-
-// ── Read config record from bin ──────────────────────────────────────────────
-async function cfgGet() {
-  try {
-    console.log('[CFG] cfgGet fetching bin');
-    const res = await fetch(JSONBIN_URL + '/latest', {
-      headers: { 'X-Master-Key': JSONBIN_API_KEY }
-    });
-    console.log('[CFG] cfgGet HTTP', res.status);
-    if (!res.ok) { console.warn('[CFG] cfgGet non-OK'); return null; }
-    const data = await res.json();
-    const records = data.record;
-    console.log('[CFG] cfgGet records in bin:', Array.isArray(records) ? records.length : typeof records);
-    if (!Array.isArray(records)) return null;
-    const found = records.find(r => r && r.__type === CFG_RECORD_TYPE) || null;
-    console.log('[CFG] cfgGet config record found:', !!found);
-    return found;
-  } catch(e) { console.warn('[CFG] cfgGet failed', e); return null; }
-}
-
-// ── Write config record to bin (preserving all review records) ───────────────
-async function cfgSet(cfg) {
-  try {
-    cfg.__type = CFG_RECORD_TYPE;
-    console.log('[CFG] cfgSet: reading raw bin');
-    const raw = await _jsonbinGetRaw();
-    console.log('[CFG] cfgSet: raw count', raw.length);
-    const withoutCfg = raw.filter(r => r && r.__type !== CFG_RECORD_TYPE);
-    withoutCfg.unshift(cfg);
-    console.log('[CFG] cfgSet: writing', withoutCfg.length, 'total records');
-    console.log('[CFG] cfgSet cfg preview:', JSON.stringify(cfg).substring(0,200));
-    const res = await fetch(JSONBIN_URL, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'X-Master-Key': JSONBIN_API_KEY },
-      body: JSON.stringify(withoutCfg)
-    });
-    console.log('[CFG] cfgSet PUT result:', res.status, res.ok);
-    if (!res.ok) { const t = await res.text(); console.warn('[CFG] cfgSet error body:', t); }
-    return res.ok;
-  } catch(e) { console.warn('[CFG] cfgSet failed', e); return false; }
-}
-
-// ── Pull server config into localStorage (called on login) ───────────────────
-async function syncConfigFromServer() {
-  console.log('[CFG] syncConfigFromServer start');
-  const cfg = await cfgGet();
-  if (!cfg) { console.log('[CFG] syncConfigFromServer: no config on server yet'); return; }
-  console.log('[CFG] syncConfigFromServer: question keys:', cfg.questions ? Object.keys(cfg.questions) : 'none');
-  if (cfg.questions) {
-    Object.entries(cfg.questions).forEach(([key, qs]) => {
-      localStorage.setItem('qs_' + key, JSON.stringify(qs));
-      console.log('[CFG] applied', key, qs.length, 'questions');
-    });
-  }
-  if (cfg.roles) { localStorage.setItem('role_list', JSON.stringify(cfg.roles)); console.log('[CFG] applied roles'); }
-  if (cfg.sections) { localStorage.setItem('sidebar_sections', JSON.stringify(cfg.sections)); console.log('[CFG] applied sections'); }
-  console.log('[CFG] syncConfigFromServer done');
-}
-
-// ── Push one question set to server ─────────────────────────────────────────
-async function pushQsToServer(type, role, qs) {
-  console.log('[CFG] pushQsToServer sessionRole=', window.sessionRole, type, role, qs.length, 'questions');
-  if (window.sessionRole !== 'admin') { console.warn('[CFG] pushQsToServer: not admin, skip'); return false; }
-  const existing = (await cfgGet()) || { __type: CFG_RECORD_TYPE, questions: {} };
-  if (!existing.questions) existing.questions = {};
-  existing.questions[type + '_' + role] = qs;
-  existing.roles = getRoleList();
-  existing.sections = getSections();
-  return cfgSet(existing);
-}
-
-// ── Push full config snapshot (all role question sets + roles + sections) ────
-async function pushFullConfigToServer() {
-  if (window.sessionRole !== 'admin') return false;
-  const cfg = (await cfgGet()) || { __type: CFG_RECORD_TYPE, questions: {} };
-  cfg.roles = getRoleList();
-  cfg.sections = getSections();
-  if (!cfg.questions) cfg.questions = {};
-  for (const type of ['prod', 'train']) {
-    getRoleList().forEach(r => {
-      const key = type + '_' + r.key;
-      try {
-        const stored = localStorage.getItem('qs_' + key);
-        if (stored) cfg.questions[key] = JSON.parse(stored);
-      } catch(e) {}
-    });
-  }
-  return cfgSet(cfg);
-}
-
-// ── Status badge (bottom-left, distinct from toast) ──────────────────────────
-let _cfgSyncT;
-function showCfgSyncBadge(msg, isErr) {
-  let el = document.getElementById('cfg-sync-badge');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'cfg-sync-badge';
-    el.style.cssText = [
-      'position:fixed', 'bottom:20px', 'left:20px',
-      'color:#fff', 'padding:7px 15px', 'border-radius:7px',
-      'font-size:0.78rem', 'font-weight:600', 'z-index:1001',
-      'transition:opacity 0.4s', 'opacity:0', 'pointer-events:none',
-      'font-family:DM Sans,sans-serif', 'box-shadow:0 2px 8px rgba(0,0,0,0.25)'
-    ].join(';');
-    document.body.appendChild(el);
-  }
-  el.style.background = isErr ? '#dc2626' : '#2d7a4f';
-  el.textContent = msg;
-  el.style.opacity = '1';
-  clearTimeout(_cfgSyncT);
-  _cfgSyncT = setTimeout(() => { el.style.opacity = '0'; }, 3200);
-}
-
-// ── saveQs: local only — server push happens via explicit Save button ────────
-// (no patch needed — original saveQs writes to localStorage, that's enough)
-
-// ── Patch: doLogin → sync config from server before rendering ────────────────
-window.doLogin = function() {
-  const pw = document.getElementById('lock-pw').value.trim();
-  const role = window.lockRole;
-  // Wrong password — show error and bail
-  if (pw !== getPw(role)) {
-    document.getElementById('lock-error').textContent = 'Incorrect password. Try again.';
-    document.getElementById('lock-pw').value = '';
-    document.getElementById('lock-pw').focus();
-    return;
-  }
-  // Correct password — set session state
-  window.sessionRole = role;
-  if (role === 'admin') window._sessionAdminPw = pw;
-  document.getElementById('lock-screen').style.display = 'none';
-  document.getElementById('nav-admin').style.display = role === 'admin' ? '' : 'none';
-  document.getElementById('nav-config').style.display = role === 'admin' ? '' : 'none';
-  document.getElementById('lock-error').textContent = '';
-  document.getElementById('session-badge').innerHTML =
-    '<span class="session-badge session-' + role + '">' +
-    (role === 'admin' ? '🔐 Admin' : '👤 Reviewer') + '</span>';
-  // Pull latest question config from server BEFORE rendering
-  showToast('Syncing question config…');
-  syncConfigFromServer().then(() => {
-    window.ROLES = buildRolesMap();
-    updateSidebarLabels();
-    if (role === 'admin') renderAdminPanel();
-    renderForm();
-    showToast('Ready');
-  });
-};
-
-// ── Patch: saveRoleNamesAdmin → push full config after save ──────────────────
-const _origSaveRoleNamesAdmin = window.saveRoleNamesAdmin;
-window.saveRoleNamesAdmin = function() {
-  _origSaveRoleNamesAdmin();
-  pushFullConfigToServer().then(ok => {
-    showCfgSyncBadge(
-      ok ? '✓ Roles saved to server — all users will see this' : '⚠ Server sync failed — roles saved locally only',
-      !ok
-    );
-  });
-};
-
-// ── Patch: saveSectionsAdmin → push full config after save ───────────────────
-const _origSaveSectionsAdmin = window.saveSectionsAdmin;
-window.saveSectionsAdmin = function() {
-  _origSaveSectionsAdmin();
-  pushFullConfigToServer().then(ok => {
-    showCfgSyncBadge(
-      ok ? '✓ Sections saved to server — all users will see this' : '⚠ Server sync failed — sections saved locally only',
-      !ok
-    );
-  });
-};
-
-// ── Patch: renderQEditor → add Save to Server button + unsaved dot ──────────
-const _origRenderQEditor = window.renderQEditor;
-window.renderQEditor = function() {
-  _origRenderQEditor();
-  if (window.sessionRole !== 'admin') return;
-
-  // Add a sticky save bar below the editor
-  const existing = document.getElementById('qe-save-bar');
-  if (existing) existing.remove();
-
-  const bar = document.createElement('div');
-  bar.id = 'qe-save-bar';
-  bar.style.cssText = [
-    'display:flex', 'align-items:center', 'justify-content:space-between',
-    'gap:12px', 'margin-top:16px', 'padding:12px 16px',
-    'background:var(--warm)', 'border:1px solid var(--border)', 'border-radius:8px'
-  ].join(';');
-
-  const hint = document.createElement('span');
-  hint.id = 'qe-save-hint';
-  hint.style.cssText = 'font-size:0.75rem;color:var(--muted);font-family:DM Sans,sans-serif;';
-  hint.textContent = 'Changes are local until you save to server.';
-
-  const btn = document.createElement('button');
-  btn.id = 'qe-save-btn';
-  btn.className = 'btn btn-primary btn-sm';
-  btn.style.cssText = 'background:#0f766e;flex-shrink:0;';
-  btn.textContent = '↑ Save to Server';
-  btn.onclick = () => {
-    btn.textContent = 'Saving…';
-    btn.disabled = true;
-    hint.textContent = 'Pushing to server…';
-    pushQsToServer(window.cfgType, window.cfgRole, getQs(window.cfgType, window.cfgRole)).then(ok => {
-      if (ok) {
-        btn.textContent = '✓ Saved';
-        btn.style.background = 'var(--success)';
-        hint.textContent = 'All reviewers will now see these questions.';
-        setTimeout(() => {
-          btn.textContent = '↑ Save to Server';
-          btn.style.background = '#0f766e';
-          btn.disabled = false;
-          hint.textContent = 'Changes are local until you save to server.';
-        }, 2500);
-      } else {
-        btn.textContent = '⚠ Save Failed';
-        btn.style.background = '#dc2626';
-        hint.textContent = 'Server save failed — check console for details.';
-        setTimeout(() => {
-          btn.textContent = '↑ Save to Server';
-          btn.style.background = '#0f766e';
-          btn.disabled = false;
-          hint.textContent = 'Changes are local until you save to server.';
-        }, 3000);
-      }
-    });
-  };
-
-  bar.appendChild(hint);
-  bar.appendChild(btn);
-  document.getElementById('config-editor').appendChild(bar);
-};
-
-// ── resetQs: local reset only — user can click Save to push to server ────────
-// (no patch needed — original resetQs handles localStorage)
 </script>
 </body>
 </html>
