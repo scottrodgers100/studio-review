@@ -1137,8 +1137,51 @@ function renderQEditor() {
       </div>
     </div>`;
   });
-  html+=`</div><p style="font-size:0.72rem;color:var(--muted);margin-top:10px">Drag to reorder · Edit questions, then click Save to Server to publish changes to all reviewers.</p>`;
+  if (sessionRole === 'admin') {
+    html += `<div id="qe-save-bar" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;padding:12px 16px;background:var(--warm);border:1px solid var(--border);border-radius:8px;">
+      <span id="qe-save-hint" style="font-size:0.75rem;color:var(--muted);">Changes are local until you save to server.</span>
+      <button id="qe-save-btn" class="btn btn-primary btn-sm" style="background:#0f766e;flex-shrink:0;" onclick="saveQsToServer()">&#x2191; Save to Server</button>
+    </div>`;
+  } else {
+    html += `<p style="font-size:0.72rem;color:var(--muted);margin-top:10px">Drag to reorder.</p>`;
+  }
   document.getElementById('config-editor').innerHTML=html;
+}
+
+function saveQsToServer() {
+  const btn = document.getElementById('qe-save-btn');
+  const hint = document.getElementById('qe-save-hint');
+  if (!btn) return;
+  btn.textContent = 'Saving…';
+  btn.disabled = true;
+  if (hint) hint.textContent = 'Pushing to server…';
+  pushQsToServer(cfgType, cfgRole, getQs(cfgType, cfgRole)).then(ok => {
+    if (ok) {
+      btn.textContent = '✓ Saved';
+      btn.style.background = 'var(--success)';
+      if (hint) hint.textContent = 'All reviewers will now see these questions.';
+      setTimeout(() => {
+        if (document.getElementById('qe-save-btn')) {
+          btn.textContent = '↑ Save to Server';
+          btn.style.background = '#0f766e';
+          btn.disabled = false;
+          if (hint) hint.textContent = 'Changes are local until you save to server.';
+        }
+      }, 2500);
+    } else {
+      btn.textContent = '⚠ Save Failed';
+      btn.style.background = '#dc2626';
+      if (hint) hint.textContent = 'Server save failed — check console for details.';
+      setTimeout(() => {
+        if (document.getElementById('qe-save-btn')) {
+          btn.textContent = '↑ Save to Server';
+          btn.style.background = '#0f766e';
+          btn.disabled = false;
+          if (hint) hint.textContent = 'Changes are local until you save to server.';
+        }
+      }, 3000);
+    }
+  });
 }
 
 function qUpdate(i, field, val) {
@@ -1592,8 +1635,9 @@ async function syncConfigFromServer() {
 
 // ── Push one question set to server ─────────────────────────────────────────
 async function pushQsToServer(type, role, qs) {
-  console.log('[CFG] pushQsToServer sessionRole=', window.sessionRole, type, role, qs.length, 'questions');
-  if (window.sessionRole !== 'admin') { console.warn('[CFG] pushQsToServer: not admin, skip'); return false; }
+  const _sr = (typeof sessionRole !== 'undefined' ? sessionRole : null) || window.sessionRole;
+  console.log('[CFG] pushQsToServer sessionRole=', _sr, type, role, qs.length, 'questions');
+  if (_sr !== 'admin') { console.warn('[CFG] pushQsToServer: not admin (sessionRole='+_sr+'), skip'); return false; }
   const existing = (await cfgGet()) || { __type: CFG_RECORD_TYPE, questions: {} };
   if (!existing.questions) existing.questions = {};
   existing.questions[type + '_' + role] = qs;
@@ -1604,7 +1648,8 @@ async function pushQsToServer(type, role, qs) {
 
 // ── Push full config snapshot (all role question sets + roles + sections) ────
 async function pushFullConfigToServer() {
-  if (window.sessionRole !== 'admin') return false;
+  const _fsr = (typeof sessionRole !== 'undefined' ? sessionRole : null) || window.sessionRole;
+  if (_fsr !== 'admin') return false;
   const cfg = (await cfgGet()) || { __type: CFG_RECORD_TYPE, questions: {} };
   cfg.roles = getRoleList();
   cfg.sections = getSections();
@@ -1648,19 +1693,24 @@ function showCfgSyncBadge(msg, isErr) {
 // (no patch needed — original saveQs writes to localStorage, that's enough)
 
 // ── Patch: doLogin → sync config from server before rendering ────────────────
+// Replaces the original doLogin entirely. Uses lockRole directly (same scope via global).
 window.doLogin = function() {
   const pw = document.getElementById('lock-pw').value.trim();
-  const role = window.lockRole;
-  // Wrong password — show error and bail
-  if (pw !== getPw(role)) {
+  // lockRole is a script-level var — read it from the DOM tab state as fallback
+  const role = (typeof lockRole !== 'undefined' ? lockRole : null)
+    || (document.getElementById('tab-admin').classList.contains('active') ? 'admin' : 'reviewer');
+  const correct = (typeof getPw === 'function') ? getPw(role) : (localStorage.getItem('pw_' + role) || (role === 'admin' ? 'admin123' : 'studio'));
+  // Wrong password
+  if (pw !== correct) {
     document.getElementById('lock-error').textContent = 'Incorrect password. Try again.';
     document.getElementById('lock-pw').value = '';
     document.getElementById('lock-pw').focus();
     return;
   }
-  // Correct password — set session state
-  window.sessionRole = role;
-  if (role === 'admin') window._sessionAdminPw = pw;
+  // Correct password
+  sessionRole = role;          // update the script-level var
+  window.sessionRole = role;   // also expose on window for the config sync code
+  if (role === 'admin') _sessionAdminPw = pw;
   document.getElementById('lock-screen').style.display = 'none';
   document.getElementById('nav-admin').style.display = role === 'admin' ? '' : 'none';
   document.getElementById('nav-config').style.display = role === 'admin' ? '' : 'none';
@@ -1668,10 +1718,9 @@ window.doLogin = function() {
   document.getElementById('session-badge').innerHTML =
     '<span class="session-badge session-' + role + '">' +
     (role === 'admin' ? '🔐 Admin' : '👤 Reviewer') + '</span>';
-  // Pull latest question config from server BEFORE rendering
   showToast('Syncing question config…');
   syncConfigFromServer().then(() => {
-    window.ROLES = buildRolesMap();
+    ROLES = buildRolesMap();
     updateSidebarLabels();
     if (role === 'admin') renderAdminPanel();
     renderForm();
@@ -1703,67 +1752,7 @@ window.saveSectionsAdmin = function() {
   });
 };
 
-// ── Patch: renderQEditor → add Save to Server button + unsaved dot ──────────
-const _origRenderQEditor = window.renderQEditor;
-window.renderQEditor = function() {
-  _origRenderQEditor();
-  if (window.sessionRole !== 'admin') return;
-
-  // Add a sticky save bar below the editor
-  const existing = document.getElementById('qe-save-bar');
-  if (existing) existing.remove();
-
-  const bar = document.createElement('div');
-  bar.id = 'qe-save-bar';
-  bar.style.cssText = [
-    'display:flex', 'align-items:center', 'justify-content:space-between',
-    'gap:12px', 'margin-top:16px', 'padding:12px 16px',
-    'background:var(--warm)', 'border:1px solid var(--border)', 'border-radius:8px'
-  ].join(';');
-
-  const hint = document.createElement('span');
-  hint.id = 'qe-save-hint';
-  hint.style.cssText = 'font-size:0.75rem;color:var(--muted);font-family:DM Sans,sans-serif;';
-  hint.textContent = 'Changes are local until you save to server.';
-
-  const btn = document.createElement('button');
-  btn.id = 'qe-save-btn';
-  btn.className = 'btn btn-primary btn-sm';
-  btn.style.cssText = 'background:#0f766e;flex-shrink:0;';
-  btn.textContent = '↑ Save to Server';
-  btn.onclick = () => {
-    btn.textContent = 'Saving…';
-    btn.disabled = true;
-    hint.textContent = 'Pushing to server…';
-    pushQsToServer(window.cfgType, window.cfgRole, getQs(window.cfgType, window.cfgRole)).then(ok => {
-      if (ok) {
-        btn.textContent = '✓ Saved';
-        btn.style.background = 'var(--success)';
-        hint.textContent = 'All reviewers will now see these questions.';
-        setTimeout(() => {
-          btn.textContent = '↑ Save to Server';
-          btn.style.background = '#0f766e';
-          btn.disabled = false;
-          hint.textContent = 'Changes are local until you save to server.';
-        }, 2500);
-      } else {
-        btn.textContent = '⚠ Save Failed';
-        btn.style.background = '#dc2626';
-        hint.textContent = 'Server save failed — check console for details.';
-        setTimeout(() => {
-          btn.textContent = '↑ Save to Server';
-          btn.style.background = '#0f766e';
-          btn.disabled = false;
-          hint.textContent = 'Changes are local until you save to server.';
-        }, 3000);
-      }
-    });
-  };
-
-  bar.appendChild(hint);
-  bar.appendChild(btn);
-  document.getElementById('config-editor').appendChild(bar);
-};
+// renderQEditor save bar is now handled directly in the first script
 
 // ── resetQs: local reset only — user can click Save to push to server ────────
 // (no patch needed — original resetQs handles localStorage)
