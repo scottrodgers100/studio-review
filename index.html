@@ -306,7 +306,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--paper); color: var(
         <div class="page-header">
           <div class="eyebrow configure">⚙ Configure</div>
           <div class="page-title">Question Editor</div>
-          <div class="page-subtitle">Edit, reorder, add or remove questions for any review form. Changes auto-save to server so all reviewers see them immediately.</div>
+          <div class="page-subtitle">Edit, reorder, add or remove questions for any review form. Edit questions, then click Save to Server to publish changes to all reviewers.</div>
         </div>
         <div class="config-tabs" id="config-tabs"></div>
         <div id="config-editor"></div>
@@ -1137,7 +1137,7 @@ function renderQEditor() {
       </div>
     </div>`;
   });
-  html+=`</div><p style="font-size:0.72rem;color:var(--muted);margin-top:10px">Drag to reorder · Changes auto-save to server so all reviewers see them immediately.</p>`;
+  html+=`</div><p style="font-size:0.72rem;color:var(--muted);margin-top:10px">Drag to reorder · Edit questions, then click Save to Server to publish changes to all reviewers.</p>`;
   document.getElementById('config-editor').innerHTML=html;
 }
 
@@ -1535,50 +1535,65 @@ const CFG_RECORD_TYPE = '__config__';
 // ── Read config record from bin ──────────────────────────────────────────────
 async function cfgGet() {
   try {
+    console.log('[CFG] cfgGet fetching bin');
     const res = await fetch(JSONBIN_URL + '/latest', {
       headers: { 'X-Master-Key': JSONBIN_API_KEY }
     });
-    if (!res.ok) return null;
+    console.log('[CFG] cfgGet HTTP', res.status);
+    if (!res.ok) { console.warn('[CFG] cfgGet non-OK'); return null; }
     const data = await res.json();
     const records = data.record;
+    console.log('[CFG] cfgGet records in bin:', Array.isArray(records) ? records.length : typeof records);
     if (!Array.isArray(records)) return null;
-    return records.find(r => r && r.__type === CFG_RECORD_TYPE) || null;
-  } catch(e) { console.warn('cfgGet failed', e); return null; }
+    const found = records.find(r => r && r.__type === CFG_RECORD_TYPE) || null;
+    console.log('[CFG] cfgGet config record found:', !!found);
+    return found;
+  } catch(e) { console.warn('[CFG] cfgGet failed', e); return null; }
 }
 
 // ── Write config record to bin (preserving all review records) ───────────────
 async function cfgSet(cfg) {
   try {
     cfg.__type = CFG_RECORD_TYPE;
+    console.log('[CFG] cfgSet: reading raw bin');
     const raw = await _jsonbinGetRaw();
-    // Remove old config, keep everything else
+    console.log('[CFG] cfgSet: raw count', raw.length);
     const withoutCfg = raw.filter(r => r && r.__type !== CFG_RECORD_TYPE);
     withoutCfg.unshift(cfg);
+    console.log('[CFG] cfgSet: writing', withoutCfg.length, 'total records');
+    console.log('[CFG] cfgSet cfg preview:', JSON.stringify(cfg).substring(0,200));
     const res = await fetch(JSONBIN_URL, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'X-Master-Key': JSONBIN_API_KEY },
       body: JSON.stringify(withoutCfg)
     });
+    console.log('[CFG] cfgSet PUT result:', res.status, res.ok);
+    if (!res.ok) { const t = await res.text(); console.warn('[CFG] cfgSet error body:', t); }
     return res.ok;
-  } catch(e) { console.warn('cfgSet failed', e); return false; }
+  } catch(e) { console.warn('[CFG] cfgSet failed', e); return false; }
 }
 
 // ── Pull server config into localStorage (called on login) ───────────────────
 async function syncConfigFromServer() {
+  console.log('[CFG] syncConfigFromServer start');
   const cfg = await cfgGet();
-  if (!cfg) return; // No server config yet — use local defaults
+  if (!cfg) { console.log('[CFG] syncConfigFromServer: no config on server yet'); return; }
+  console.log('[CFG] syncConfigFromServer: question keys:', cfg.questions ? Object.keys(cfg.questions) : 'none');
   if (cfg.questions) {
     Object.entries(cfg.questions).forEach(([key, qs]) => {
       localStorage.setItem('qs_' + key, JSON.stringify(qs));
+      console.log('[CFG] applied', key, qs.length, 'questions');
     });
   }
-  if (cfg.roles) localStorage.setItem('role_list', JSON.stringify(cfg.roles));
-  if (cfg.sections) localStorage.setItem('sidebar_sections', JSON.stringify(cfg.sections));
+  if (cfg.roles) { localStorage.setItem('role_list', JSON.stringify(cfg.roles)); console.log('[CFG] applied roles'); }
+  if (cfg.sections) { localStorage.setItem('sidebar_sections', JSON.stringify(cfg.sections)); console.log('[CFG] applied sections'); }
+  console.log('[CFG] syncConfigFromServer done');
 }
 
 // ── Push one question set to server ─────────────────────────────────────────
 async function pushQsToServer(type, role, qs) {
-  if (window.sessionRole !== 'admin') return false;
+  console.log('[CFG] pushQsToServer sessionRole=', window.sessionRole, type, role, qs.length, 'questions');
+  if (window.sessionRole !== 'admin') { console.warn('[CFG] pushQsToServer: not admin, skip'); return false; }
   const existing = (await cfgGet()) || { __type: CFG_RECORD_TYPE, questions: {} };
   if (!existing.questions) existing.questions = {};
   existing.questions[type + '_' + role] = qs;
@@ -1629,19 +1644,8 @@ function showCfgSyncBadge(msg, isErr) {
   _cfgSyncT = setTimeout(() => { el.style.opacity = '0'; }, 3200);
 }
 
-// ── Patch: saveQs → also push to server when admin ──────────────────────────
-const _origSaveQs = window.saveQs;
-window.saveQs = function(type, role, qs) {
-  _origSaveQs(type, role, qs);
-  if (window.sessionRole === 'admin') {
-    pushQsToServer(type, role, qs).then(ok => {
-      showCfgSyncBadge(
-        ok ? '✓ Questions saved to server — all reviewers will see this' : '⚠ Server save failed — changes are local only',
-        !ok
-      );
-    });
-  }
-};
+// ── saveQs: local only — server push happens via explicit Save button ────────
+// (no patch needed — original saveQs writes to localStorage, that's enough)
 
 // ── Patch: doLogin → sync config from server before rendering ────────────────
 window.doLogin = function() {
@@ -1699,44 +1703,70 @@ window.saveSectionsAdmin = function() {
   });
 };
 
-// ── Patch: renderQEditor → inject server sync controls (admin only) ───────────
+// ── Patch: renderQEditor → add Save to Server button + unsaved dot ──────────
 const _origRenderQEditor = window.renderQEditor;
 window.renderQEditor = function() {
   _origRenderQEditor();
   if (window.sessionRole !== 'admin') return;
-  const toolbar = document.querySelector('.qe-toolbar');
-  if (!toolbar) return;
-  // "Push All" button — useful after bulk edits or first-time setup
+
+  // Add a sticky save bar below the editor
+  const existing = document.getElementById('qe-save-bar');
+  if (existing) existing.remove();
+
+  const bar = document.createElement('div');
+  bar.id = 'qe-save-bar';
+  bar.style.cssText = [
+    'display:flex', 'align-items:center', 'justify-content:space-between',
+    'gap:12px', 'margin-top:16px', 'padding:12px 16px',
+    'background:var(--warm)', 'border:1px solid var(--border)', 'border-radius:8px'
+  ].join(';');
+
+  const hint = document.createElement('span');
+  hint.id = 'qe-save-hint';
+  hint.style.cssText = 'font-size:0.75rem;color:var(--muted);font-family:DM Sans,sans-serif;';
+  hint.textContent = 'Changes are local until you save to server.';
+
   const btn = document.createElement('button');
-  btn.className = 'btn btn-sm';
-  btn.style.cssText = 'background:#0f766e;color:#fff;border:none;font-family:DM Sans,sans-serif;';
-  btn.title = 'Push every question set for every role to the server so all reviewers see the latest';
-  btn.textContent = '↑ Push All to Server';
+  btn.id = 'qe-save-btn';
+  btn.className = 'btn btn-primary btn-sm';
+  btn.style.cssText = 'background:#0f766e;flex-shrink:0;';
+  btn.textContent = '↑ Save to Server';
   btn.onclick = () => {
     btn.textContent = 'Saving…';
     btn.disabled = true;
-    pushFullConfigToServer().then(ok => {
-      showCfgSyncBadge(ok ? '✓ All question sets pushed to server' : '⚠ Server push failed', !ok);
-      btn.textContent = '↑ Push All to Server';
-      btn.disabled = false;
+    hint.textContent = 'Pushing to server…';
+    pushQsToServer(window.cfgType, window.cfgRole, getQs(window.cfgType, window.cfgRole)).then(ok => {
+      if (ok) {
+        btn.textContent = '✓ Saved';
+        btn.style.background = 'var(--success)';
+        hint.textContent = 'All reviewers will now see these questions.';
+        setTimeout(() => {
+          btn.textContent = '↑ Save to Server';
+          btn.style.background = '#0f766e';
+          btn.disabled = false;
+          hint.textContent = 'Changes are local until you save to server.';
+        }, 2500);
+      } else {
+        btn.textContent = '⚠ Save Failed';
+        btn.style.background = '#dc2626';
+        hint.textContent = 'Server save failed — check console for details.';
+        setTimeout(() => {
+          btn.textContent = '↑ Save to Server';
+          btn.style.background = '#0f766e';
+          btn.disabled = false;
+          hint.textContent = 'Changes are local until you save to server.';
+        }, 3000);
+      }
     });
   };
-  toolbar.appendChild(btn);
+
+  bar.appendChild(hint);
+  bar.appendChild(btn);
+  document.getElementById('config-editor').appendChild(bar);
 };
 
-// ── Patch: resetQs → re-push defaults to server after local reset ────────────
-const _origResetQs = window.resetQs;
-window.resetQs = function() {
-  _origResetQs();
-  setTimeout(() => {
-    if (window.sessionRole === 'admin') {
-      const qs = getQs(window.cfgType, window.cfgRole);
-      pushQsToServer(window.cfgType, window.cfgRole, qs).then(ok => {
-        showCfgSyncBadge(ok ? '✓ Default questions pushed to server' : '⚠ Server sync failed', !ok);
-      });
-    }
-  }, 300);
-};
+// ── resetQs: local reset only — user can click Save to push to server ────────
+// (no patch needed — original resetQs handles localStorage)
 </script>
 </body>
 </html>
