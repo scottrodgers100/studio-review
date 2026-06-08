@@ -1644,20 +1644,27 @@ window.saveQs = function(type, role, qs) {
 };
 
 // ── Patch: doLogin → sync config from server before rendering ────────────────
-const _origDoLogin = window.doLogin;
 window.doLogin = function() {
   const pw = document.getElementById('lock-pw').value.trim();
   const role = window.lockRole;
-  if (pw !== getPw(role)) { _origDoLogin(); return; } // Wrong pw — let original handle error display
-  // Correct password — handle login with async config sync
+  // Wrong password — show error and bail
+  if (pw !== getPw(role)) {
+    document.getElementById('lock-error').textContent = 'Incorrect password. Try again.';
+    document.getElementById('lock-pw').value = '';
+    document.getElementById('lock-pw').focus();
+    return;
+  }
+  // Correct password — set session state
   window.sessionRole = role;
   if (role === 'admin') window._sessionAdminPw = pw;
   document.getElementById('lock-screen').style.display = 'none';
   document.getElementById('nav-admin').style.display = role === 'admin' ? '' : 'none';
   document.getElementById('nav-config').style.display = role === 'admin' ? '' : 'none';
+  document.getElementById('lock-error').textContent = '';
   document.getElementById('session-badge').innerHTML =
     '<span class="session-badge session-' + role + '">' +
     (role === 'admin' ? '🔐 Admin' : '👤 Reviewer') + '</span>';
+  // Pull latest question config from server BEFORE rendering
   showToast('Syncing question config…');
   syncConfigFromServer().then(() => {
     window.ROLES = buildRolesMap();
