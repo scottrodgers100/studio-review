@@ -183,6 +183,10 @@ body { font-family: 'DM Sans', sans-serif; background: var(--paper); color: var(
 .filter-row { display: flex; gap: 8px; align-items: center; margin-bottom: 13px; flex-wrap: wrap; }
 .filter-row select { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; font-family: 'DM Sans', sans-serif; font-size: 0.8rem; background: #fff; outline: none; }
 
+.record-del-btn { background: none; border: none; cursor: pointer; font-size: 1rem; padding: 4px 6px; border-radius: 5px; color: #cc4444; opacity: 0.35; transition: opacity 0.15s, background 0.15s; flex-shrink: 0; line-height: 1; }
+.record-card:hover .record-del-btn { opacity: 0.7; }
+.record-del-btn:hover { opacity: 1 !important; background: #fef2f2; }
+
 .view { display: none; }
 .view.active { display: block; }
 
@@ -928,7 +932,9 @@ function _renderRecordsList(all) {
     <div class="record-info"><div class="record-name">${h(r.photographer_name||'Unknown')} · ${ROLES[r.role]}</div>
     <div class="record-meta">${h(r.job_id||'—')} · ${fmtDate(r.submitted_at)} · Reviewer: ${h(r.reviewer_name)}</div></div>
     <div class="record-score">${r.overall_score||r.avg_rating||'—'}<span>${r.overall_score?'/8':' avg'}</span></div>
+    ${sessionRole==='admin'?'<button class="record-del-btn" title="Delete record" onclick="event.stopPropagation();deleteRecord('+r.id+')">&#x1F5D1;</button>':''}
   </div>`).join('');
+
 }
 
 function showDetail(id) {
@@ -940,11 +946,25 @@ function showDetail(id) {
     return `<div class="detail-row"><span class="detail-key">${lbl}</span><span class="detail-val">${h(v)}</span></div>`;
   }).join('');
   document.getElementById('modal-title').textContent=`${r.photographer_name} · ${ROLES[r.role]}`;
-  document.getElementById('modal-body').innerHTML=rows;
+  document.getElementById('modal-body').innerHTML = rows +
+    (sessionRole==='admin' ? `<div style="padding-top:14px;margin-top:4px;border-top:1px solid var(--border);display:flex;justify-content:flex-end"><button class="btn btn-sm" style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca;" onclick="deleteRecord(${r.id},true)">🗑 Delete This Record</button></div>` : '');
   document.getElementById('modal-overlay').classList.add('show');
 }
 
-function clearAll() {
+function deleteRecord(id, fromModal) {
+  if(sessionRole !== 'admin') return;
+  const r = getRecords().find(x=>x.id===id);
+  const label = r ? `${r.photographer_name||'this record'} · ${fmtDate(r.submitted_at)}` : 'this record';
+  if(!confirm(`Delete ${label}?\n\nThis cannot be undone.`)) return;
+  if(fromModal) closeModal();
+  showToast('Deleting…');
+  apiDeleteReview(id).then(ok => {
+    if(ok) { showToast('Record deleted'); renderRecords(); }
+    else showToast('⚠️ Delete failed — check your connection');
+  });
+}
+
+
   if(!confirm('Delete ALL review records from the server and this device? This cannot be undone.')) return;
   showToast('Deleting all records…');
   _jsonbinGetRaw().then(raw => {
