@@ -965,6 +965,7 @@ function deleteRecord(id, fromModal) {
 }
 
 
+function clearAll() {
   if(!confirm('Delete ALL review records from the server and this device? This cannot be undone.')) return;
   showToast('Deleting all records…');
   _jsonbinGetRaw().then(raw => {
