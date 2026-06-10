@@ -989,22 +989,49 @@ function renderScores() {
   apiFetchReviews().then(() => _renderScoresList());
 }
 
+let _scoreSort = 'alpha'; // 'alpha' | 'high' | 'low'
+
 function _renderScoresList() {
   const el=document.getElementById('scores-container');
   const all=getRecords();
-  const photogs=[...new Set(all.map(r=>r.photographer_name).filter(Boolean))].sort();
-  let html=`<div class="page-header"><div class="eyebrow scores">📊 Scorecards</div><div class="page-title">Photographer Performance</div><div class="page-subtitle">Cumulative scores across all reviews. Click a card to drill in.</div></div>`;
-  if(!photogs.length){html+=emptyState('No reviews yet. Submit some reviews to see scorecards.');el.innerHTML=html;return;}
-  html+=`<div class="photog-grid">`;
-  for(const name of photogs) {
+  const photogNames=[...new Set(all.map(r=>r.photographer_name).filter(Boolean))];
+
+  // Build per-photographer stats
+  const photogData = photogNames.map(name => {
     const revs=all.filter(r=>r.photographer_name===name);
     const sc=revs.map(r=>+(r.overall_score||r.avg_rating||0)).filter(x=>x>0);
     const avg=sc.length?(sc.reduce((a,b)=>a+b,0)/sc.length):0;
     const trend=sc.length>=2?sc[0]-sc[sc.length-1]:0;
+    const roles=[...new Set(revs.map(r=>ROLES[r.role]))];
+    return {name, revs, sc, avg, trend, roles};
+  });
+
+  // Sort
+  if(_scoreSort==='high') photogData.sort((a,b)=>b.avg-a.avg);
+  else if(_scoreSort==='low') photogData.sort((a,b)=>a.avg-b.avg);
+  else photogData.sort((a,b)=>a.name.localeCompare(b.name));
+
+  let html=`<div class="page-header"><div class="eyebrow scores">📊 Scorecards</div><div class="page-title">Photographer Performance</div><div class="page-subtitle">Cumulative scores across all reviews. Click a card to drill in.</div></div>`;
+  if(!photogData.length){html+=emptyState('No reviews yet. Submit some reviews to see scorecards.');el.innerHTML=html;return;}
+
+  // Controls bar
+  html+=`<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+    <div style="display:flex;align-items:center;gap:6px">
+      <span style="font-size:0.77rem;color:var(--muted);font-weight:600;letter-spacing:0.04em;text-transform:uppercase">Sort</span>
+      <select onchange="_scoreSort=this.value;_renderScoresList()" style="padding:5px 9px;border:1px solid var(--border);border-radius:6px;font-family:'DM Sans',sans-serif;font-size:0.8rem;background:#fff;outline:none;cursor:pointer">
+        <option value="alpha"${_scoreSort==='alpha'?' selected':''}>A → Z</option>
+        <option value="high"${_scoreSort==='high'?' selected':''}>Rating: High → Low</option>
+        <option value="low"${_scoreSort==='low'?' selected':''}>Rating: Low → High</option>
+      </select>
+    </div>
+    <button class="btn btn-secondary btn-sm" onclick="exportScorecardsCsv()" title="Export all scorecard data to CSV">⬇ Export CSV</button>
+  </div>`;
+
+  html+=`<div class="photog-grid">`;
+  for(const {name, revs, sc, avg, trend, roles} of photogData) {
     const ti=trend>0.1?'↑':trend<-0.1?'↓':'→';
     const tc=trend>0.1?'var(--success)':trend<-0.1?'#dc2626':'var(--muted)';
     const pct=(avg/8)*100, cls=avg>=5.6?'good':avg>=4?'mid':'low';
-    const roles=[...new Set(revs.map(r=>ROLES[r.role]))];
     html+=`<div class="photog-card" onclick="drillPhotog('${encodeURIComponent(name)}')">
       <div class="photog-name">${h(name)}</div>
       <div class="photog-stats">
@@ -1018,6 +1045,31 @@ function _renderScoresList() {
   }
   html+=`</div>`;
   el.innerHTML=html;
+}
+
+function exportScorecardsCsv() {
+  const all=getRecords();
+  const photogNames=[...new Set(all.map(r=>r.photographer_name).filter(Boolean))].sort();
+  if(!photogNames.length){showToast('No scorecard data to export');return;}
+
+  const rows=[['Photographer','Reviews','Avg Rating','Best Score','Trend','Roles']];
+  for(const name of photogNames){
+    const revs=all.filter(r=>r.photographer_name===name);
+    const sc=revs.map(r=>+(r.overall_score||r.avg_rating||0)).filter(x=>x>0);
+    const avg=sc.length?(sc.reduce((a,b)=>a+b,0)/sc.length):0;
+    const best=sc.length?Math.max(...sc):0;
+    const trend=sc.length>=2?sc[0]-sc[sc.length-1]:0;
+    const ti=trend>0.1?'Up':trend<-0.1?'Down':'Flat';
+    const roles=[...new Set(revs.map(r=>ROLES[r.role]))].join('; ');
+    rows.push([name, revs.length, avg.toFixed(2), best||'—', ti, roles]);
+  }
+  const csv=rows.map(r=>r.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\n');
+  const blob=new Blob([csv],{type:'text/csv'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download='scorecards.csv'; a.click();
+  URL.revokeObjectURL(url);
+  showToast('Scorecards exported');
 }
 
 function drillPhotog(enc) { scorecardName=decodeURIComponent(enc); renderPhotogDetail(scorecardName); }
