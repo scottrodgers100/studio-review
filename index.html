@@ -998,84 +998,75 @@ function downloadReviewRecord(id) {
   const r = getRecords().find(x=>x.id===id); if(!r) return;
   const skip=['id','type','role','anonymous','avg_rating','__type','_reviewer_name_real'];
   const nice={photographer_name:'Photographer',job_id:'Job ID',job_date:'Date',reviewer_name:'Reviewer',overall_score:'Overall Score',next_action:'Next Action',submitted_at:'Submitted At'};
-
-  // Build a name→label lookup from question config
   const qLookup = {};
-  try {
-    const qs = getQs(r.type, r.role);
-    for (const q of qs) { if (q.name && q.label) qLookup[q.name] = q.label; }
-  } catch(e) {}
-
-  const typeLabel = r.type === 'prod' ? 'Production' : 'Trainer';
-  const roleLabel = ROLES[r.role] || r.role;
-
-  let txt = `STUDIO REVIEW RECORD\n${'='.repeat(40)}\n`;
-  txt += `${typeLabel} Review — ${roleLabel}\n`;
-  txt += `${'='.repeat(40)}\n\n`;
-
-  Object.entries(r).filter(([k])=>!skip.includes(k)&&r[k]).forEach(([k,v])=>{
-    const lbl = nice[k] || qLookup[k] || k.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
-    txt += `${lbl}:\n  ${v}\n\n`;
+  try { const qs=getQs(r.type,r.role); for(const q of qs){if(q.name&&q.label)qLookup[q.name]=q.label;} } catch(e) {}
+  const csvCell = v => '"' + String(v).replace(/"/g,'""') + '"';
+  const entries = Object.entries(r).filter(([k])=>!skip.includes(k)&&r[k]);
+  const headers = entries.map(([k])=> nice[k] || qLookup[k] || k.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()));
+  const values = entries.map(([k,v])=>{
+    if(k==='reviewer_name'&&r.anonymous&&sessionRole==='admin'&&r._reviewer_name_real)
+      return `Anonymous (admin: ${r._reviewer_name_real})`;
+    return v;
   });
-
+  const csv = [headers.map(csvCell).join(','), values.map(csvCell).join(',')].join('\n');
   const safeName = (r.photographer_name||'review').replace(/[^a-z0-9]/gi,'_');
   const safeDate = (r.job_date||r.submitted_at||'').slice(0,10);
-  const filename = `review_${safeName}_${safeDate}.txt`;
-
-  const blob = new Blob([txt], {type:'text/plain'});
+  const blob = new Blob([csv], {type:'text/csv'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href=url; a.download=filename; a.click();
+  a.href=url; a.download=`review_${safeName}_${safeDate}.csv`; a.click();
   URL.revokeObjectURL(url);
   showToast('Record downloaded');
 }
 
 function downloadAllRecords() {
-  // Respect active filters — download what's currently shown
   const all = getRecords();
   const ft = document.getElementById('rf-type').value;
   const fr = document.getElementById('rf-role').value;
   const fp = document.getElementById('rf-photog').value;
   const records = all.filter(r => (!ft||r.type===ft) && (!fr||r.role===fr) && (!fp||r.photographer_name===fp));
-
   if (!records.length) { showToast('No records to download'); return; }
 
-  const skip = ['id','type','role','anonymous','avg_rating','__type','_reviewer_name_real'];
-  const nice = {photographer_name:'Photographer',job_id:'Job ID',job_date:'Date',reviewer_name:'Reviewer',overall_score:'Overall Score',next_action:'Next Action',submitted_at:'Submitted At'};
+  const skip = ['id','anonymous','avg_rating','__type','_reviewer_name_real'];
+  const nice = {type:'Type',role:'Role',photographer_name:'Photographer',job_id:'Job ID',job_date:'Date',reviewer_name:'Reviewer',overall_score:'Overall Score',next_action:'Next Action',submitted_at:'Submitted At'};
+  const csvCell = v => '"' + String(v==null?'':v).replace(/"/g,'""') + '"';
 
-  let txt = `STUDIO REVIEW EXPORT\n${'='.repeat(40)}\n`;
-  txt += `Exported: ${new Date().toLocaleString()}\n`;
-  txt += `Records: ${records.length}`;
-  if (ft||fr||fp) txt += ` (filtered)`;
-  txt += `\n${'='.repeat(40)}\n\n`;
+  // Superset of keys in sensible order
+  const priorityKeys = ['type','role','photographer_name','job_id','job_date','reviewer_name','overall_score','next_action','submitted_at'];
+  const allKeys = new Set(priorityKeys);
+  records.forEach(r => Object.keys(r).forEach(k => { if(!skip.includes(k)) allKeys.add(k); }));
 
-  for (const r of records) {
+  const recordMeta = records.map(r => {
     const qLookup = {};
     try { const qs=getQs(r.type,r.role); for(const q of qs){if(q.name&&q.label)qLookup[q.name]=q.label;} } catch(e) {}
-    const typeLabel = r.type === 'prod' ? 'Production' : 'Trainer';
-    const roleLabel = ROLES[r.role] || r.role;
-    txt += `── ${typeLabel} Review — ${roleLabel} ──\n`;
-    Object.entries(r).filter(([k])=>!skip.includes(k)&&r[k]).forEach(([k,v])=>{
-      const lbl = nice[k] || qLookup[k] || k.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
-      let val = v;
-      if (k === 'reviewer_name' && r.anonymous && sessionRole === 'admin' && r._reviewer_name_real) {
-        val = `Anonymous (admin: ${r._reviewer_name_real})`;
-      }
-      txt += `${lbl}: ${val}\n`;
+    return qLookup;
+  });
+
+  const keys = [...allKeys].filter(k => !skip.includes(k));
+  const sampleLookup = recordMeta.reduce((acc, m) => ({...acc, ...m}), {});
+  const headers = keys.map(k => nice[k] || sampleLookup[k] || k.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()));
+
+  const rows = [headers.map(csvCell).join(',')];
+  records.forEach((r, i) => {
+    const row = keys.map(k => {
+      if (k === 'type') return r.type === 'prod' ? 'Production' : 'Trainer';
+      if (k === 'role') return ROLES[r.role] || r.role;
+      if (k === 'reviewer_name' && r.anonymous && sessionRole === 'admin' && r._reviewer_name_real)
+        return 'Anonymous (admin: ' + r._reviewer_name_real + ')';
+      return r[k] == null ? '' : r[k];
     });
-    txt += `\n`;
-  }
+    rows.push(row.map(csvCell).join(','));
+  });
 
+  const csv = rows.join('\n');
   const datestamp = new Date().toISOString().slice(0,10);
-  const filterTag = fp ? `_${fp.replace(/[^a-z0-9]/gi,'_')}` : (fr ? `_${fr}` : '');
-  const filename = `reviews${filterTag}_${datestamp}.txt`;
-
-  const blob = new Blob([txt], {type:'text/plain'});
+  const filterTag = fp ? '_' + fp.replace(/[^a-z0-9]/gi,'_') : (fr ? '_' + fr : '');
+  const blob = new Blob([csv], {type:'text/csv'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href=url; a.download=filename; a.click();
+  a.href=url; a.download='reviews' + filterTag + '_' + datestamp + '.csv'; a.click();
   URL.revokeObjectURL(url);
-  showToast(`Downloaded ${records.length} records`);
+  showToast('Downloaded ' + records.length + ' records');
 }
 
 function deleteRecord(id, fromModal) {
