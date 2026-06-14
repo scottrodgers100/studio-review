@@ -353,7 +353,27 @@ body { font-family: 'DM Sans', sans-serif; background: var(--paper); color: var(
         </div>
 
         <div class="admin-section">
-          <div class="admin-section-title">🔑 Change Passwords</div>
+          <div class="admin-section-title">🔗 Bypass Links</div>
+          <p style="font-size:0.78rem;color:var(--muted);margin-bottom:14px">Set a secret token to create password-free links for reviewers. Anyone with the link goes straight to the specified form without seeing the login screen. Leave blank to disable bypass links entirely.</p>
+          <div class="field" style="margin-bottom:12px">
+            <label>Bypass Token</label>
+            <div style="display:flex;gap:8px">
+              <input type="text" id="bypass-token-input" placeholder="e.g. studioreviews2026" style="flex:1" autocomplete="off">
+              <button class="btn btn-secondary btn-sm" onclick="generateBypassToken()">Generate</button>
+            </div>
+            <span class="hint">Keep this secret — anyone with it can submit reviews without a password.</span>
+          </div>
+          <div id="bypass-links-preview" style="display:none;background:var(--warm);border:1px solid var(--border);border-radius:7px;padding:13px;font-size:0.78rem;margin-bottom:12px">
+            <div style="font-weight:600;margin-bottom:8px">Shareable links (copy and send to reviewers):</div>
+            <div id="bypass-links-list"></div>
+          </div>
+          <div class="admin-save-bar">
+            <button class="btn btn-secondary btn-sm" onclick="clearBypassToken()">Disable Bypass</button>
+            <button class="btn btn-primary btn-sm" onclick="saveBypassToken()">Save Token</button>
+          </div>
+        </div>
+
+        <div class="admin-section">
           <p style="font-size:0.78rem;color:var(--muted);margin-bottom:14px">The <strong>Reviewer password</strong> is stored in browser storage — share it verbally with staff. The <strong>Admin password</strong> must also match the <code>ADMIN_PASSWORD</code> environment variable set in Netlify (Site Settings → Environment Variables) — otherwise server data won't load. Update both together.</p>
           <div class="pw-change-grid">
             <div class="field"><label>New Reviewer Password</label><input type="password" id="pw-reviewer-new" placeholder="New password" autocomplete="new-password"></div>
@@ -1560,6 +1580,7 @@ function renderAdminPanel() {
     : '<p style="font-size:0.82rem;color:var(--muted)">No roles yet. Add one below.</p>';
 
   renderSectionEditor();
+  renderBypassPanel();
 }
 
 function roleDragStart(e, i) { roleDragIdx = i; e.dataTransfer.effectAllowed = 'move'; }
@@ -1745,6 +1766,65 @@ function savePasswords() {
   }
   if(msgs.length) showToast(msgs.join(' · '));
   else showToast('No changes made');
+}
+
+function renderBypassPanel() {
+  const token = localStorage.getItem('bypass_token') || '';
+  const inp = document.getElementById('bypass-token-input');
+  if (inp) inp.value = token;
+  updateBypassPreview(token);
+}
+
+function updateBypassPreview(token) {
+  const preview = document.getElementById('bypass-links-preview');
+  const list = document.getElementById('bypass-links-list');
+  if (!preview || !list) return;
+  if (!token) { preview.style.display = 'none'; return; }
+  const base = location.origin + location.pathname;
+  const roles = getRoleList();
+  let html = '';
+  roles.forEach(r => {
+    const url = `${base}?bypass=${encodeURIComponent(token)}&type=prod&role=${encodeURIComponent(r.key)}`;
+    html += `<div style="margin-bottom:7px">
+      <div style="font-weight:600;font-size:0.76rem;color:var(--ink);margin-bottom:2px">Production · ${h(r.label)}</div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input type="text" value="${h(url)}" readonly style="flex:1;padding:4px 8px;border:1px solid var(--border);border-radius:5px;font-family:monospace;font-size:0.72rem;background:#fff;outline:none;color:var(--muted)">
+        <button class="btn btn-secondary btn-sm" onclick="copyBypassLink(this,'${h(url)}')">Copy</button>
+      </div>
+    </div>`;
+  });
+  list.innerHTML = html;
+  preview.style.display = 'block';
+}
+
+function copyBypassLink(btn, url) {
+  navigator.clipboard.writeText(url).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = orig, 1800);
+  });
+}
+
+function generateBypassToken() {
+  const token = Math.random().toString(36).slice(2,8) + Math.random().toString(36).slice(2,8);
+  document.getElementById('bypass-token-input').value = token;
+  updateBypassPreview(token);
+}
+
+function saveBypassToken() {
+  const token = document.getElementById('bypass-token-input').value.trim();
+  if (!token) { showToast('Enter a token first, or click Disable Bypass'); return; }
+  localStorage.setItem('bypass_token', token);
+  updateBypassPreview(token);
+  showToast('Bypass token saved');
+}
+
+function clearBypassToken() {
+  if (!confirm('Disable bypass links? All existing bypass URLs will stop working.')) return;
+  localStorage.removeItem('bypass_token');
+  document.getElementById('bypass-token-input').value = '';
+  document.getElementById('bypass-links-preview').style.display = 'none';
+  showToast('Bypass links disabled');
 }
 
 // INIT
@@ -1943,6 +2023,47 @@ window.saveSectionsAdmin = function() {
 
 // ── resetQs: local reset only — user can click Save to push to server ────────
 // (no patch needed — original resetQs handles localStorage)
+
+// ── Bypass link: ?bypass=TOKEN&type=prod&role=senior ─────────────────────────
+// Skips the password screen and lands directly on the specified form.
+// Token is set in Admin → Bypass Link. type defaults to 'prod', role to 'senior'.
+// Example URL: https://yoursite.netlify.app/?bypass=abc123&type=prod&role=senior
+(function checkBypassLink() {
+  const params = new URLSearchParams(location.search);
+  const token = params.get('bypass');
+  if (!token) return;
+
+  const stored = localStorage.getItem('bypass_token') || '';
+  if (!stored || token !== stored) return; // wrong or unset token — fall through to login
+
+  const type = params.get('type') || 'prod';
+  const role = params.get('role') || 'senior';
+
+  // Auto-login as reviewer
+  sessionRole = 'reviewer';
+  window.sessionRole = 'reviewer';
+  document.getElementById('lock-screen').style.display = 'none';
+  document.getElementById('nav-admin').style.display = 'none';
+  document.getElementById('nav-config').style.display = 'none';
+  document.getElementById('session-badge').innerHTML =
+    '<span class="session-badge session-reviewer">👤 Reviewer</span>';
+
+  syncConfigFromServer().then(() => {
+    ROLES = buildRolesMap();
+    updateSidebarLabels();
+    curType = type;
+    curRole = role;
+    // Highlight the correct sidebar button if it exists
+    const sbBtn = document.getElementById('sb-' + type + '-' + role);
+    if (sbBtn) {
+      document.querySelectorAll('.sidebar-btn').forEach(b => b.classList.remove('active'));
+      sbBtn.classList.add('active');
+    }
+    showView('forms');
+    renderForm();
+  });
+})();
+
 </script>
 </body>
 </html>
