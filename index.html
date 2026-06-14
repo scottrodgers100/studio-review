@@ -1773,16 +1773,20 @@ function updateBypassPreview(token) {
   if (!token) { preview.style.display = 'none'; return; }
   const base = location.origin + location.pathname;
   const roles = getRoleList();
+  const types = [{key:'prod',label:'Production'},{key:'train',label:'Trainer'}];
   let html = '';
-  roles.forEach(r => {
-    const url = `${base}?bypass=${encodeURIComponent(token)}&type=prod&role=${encodeURIComponent(r.key)}`;
-    html += `<div style="margin-bottom:7px">
-      <div style="font-weight:600;font-size:0.76rem;color:var(--ink);margin-bottom:2px">Production · ${h(r.label)}</div>
-      <div style="display:flex;gap:6px;align-items:center">
-        <input type="text" value="${h(url)}" readonly style="flex:1;padding:4px 8px;border:1px solid var(--border);border-radius:5px;font-family:monospace;font-size:0.72rem;background:#fff;outline:none;color:var(--muted)">
-        <button class="btn btn-secondary btn-sm" onclick="copyBypassLink(this,'${h(url)}')">Copy</button>
-      </div>
-    </div>`;
+  types.forEach(type => {
+    html += `<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin:10px 0 6px">${type.label} Reviews</div>`;
+    roles.forEach(r => {
+      const url = `${base}?bypass=${encodeURIComponent(token)}&type=${type.key}&role=${encodeURIComponent(r.key)}`;
+      html += `<div style="margin-bottom:6px">
+        <div style="font-weight:600;font-size:0.76rem;color:var(--ink);margin-bottom:2px">${h(r.label)}</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input type="text" value="${h(url)}" readonly style="flex:1;padding:4px 8px;border:1px solid var(--border);border-radius:5px;font-family:monospace;font-size:0.72rem;background:#fff;outline:none;color:var(--muted)">
+          <button class="btn btn-secondary btn-sm" onclick="copyBypassLink(this,'${h(url)}')">Copy</button>
+        </div>
+      </div>`;
+    });
   });
   list.innerHTML = html;
   preview.style.display = 'block';
