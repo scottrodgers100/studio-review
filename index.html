@@ -941,14 +941,68 @@ function showDetail(id) {
   const r = getRecords().find(x=>x.id===id); if(!r) return;
   const skip=['id','type','role','anonymous','submitted_at','avg_rating','__type'];
   const nice={photographer_name:'Photographer',job_id:'Job ID',job_date:'Date',reviewer_name:'Reviewer',overall_score:'Overall Score',next_action:'Next Action'};
+
+  // Build a name→label lookup from the actual question config for this record
+  const qLookup = {};
+  try {
+    const qs = getQs(r.type, r.role);
+    for (const q of qs) {
+      if (q.name && q.label) qLookup[q.name] = q.label;
+    }
+  } catch(e) {}
+
   const rows=Object.entries(r).filter(([k])=>!skip.includes(k)&&r[k]).map(([k,v])=>{
-    const lbl=nice[k]||k.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+    // Priority: nice[] hardcoded names → question config label → humanize key (fallback)
+    const lbl = nice[k] || qLookup[k] || k.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
     return `<div class="detail-row"><span class="detail-key">${lbl}</span><span class="detail-val">${h(v)}</span></div>`;
   }).join('');
-  document.getElementById('modal-title').textContent=`${r.photographer_name} · ${ROLES[r.role]}`;
-  document.getElementById('modal-body').innerHTML = rows +
-    (sessionRole==='admin' ? `<div style="padding-top:14px;margin-top:4px;border-top:1px solid var(--border);display:flex;justify-content:flex-end"><button class="btn btn-sm" style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca;" onclick="deleteRecord(${r.id},true)">🗑 Delete This Record</button></div>` : '');
+
+  const title = `${r.photographer_name} · ${ROLES[r.role]}`;
+  document.getElementById('modal-title').textContent = title;
+
+  const footerBtns = `<div style="padding-top:14px;margin-top:4px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+    <button class="btn btn-secondary btn-sm" onclick="downloadReviewRecord(${r.id})">⬇ Download Record</button>
+    ${sessionRole==='admin' ? `<button class="btn btn-sm" style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca;" onclick="deleteRecord(${r.id},true)">🗑 Delete This Record</button>` : ''}
+  </div>`;
+
+  document.getElementById('modal-body').innerHTML = rows + footerBtns;
   document.getElementById('modal-overlay').classList.add('show');
+}
+
+function downloadReviewRecord(id) {
+  const r = getRecords().find(x=>x.id===id); if(!r) return;
+  const skip=['id','type','role','anonymous','avg_rating','__type'];
+  const nice={photographer_name:'Photographer',job_id:'Job ID',job_date:'Date',reviewer_name:'Reviewer',overall_score:'Overall Score',next_action:'Next Action',submitted_at:'Submitted At'};
+
+  // Build a name→label lookup from question config
+  const qLookup = {};
+  try {
+    const qs = getQs(r.type, r.role);
+    for (const q of qs) { if (q.name && q.label) qLookup[q.name] = q.label; }
+  } catch(e) {}
+
+  const typeLabel = r.type === 'prod' ? 'Production' : 'Trainer';
+  const roleLabel = ROLES[r.role] || r.role;
+
+  let txt = `STUDIO REVIEW RECORD\n${'='.repeat(40)}\n`;
+  txt += `${typeLabel} Review — ${roleLabel}\n`;
+  txt += `${'='.repeat(40)}\n\n`;
+
+  Object.entries(r).filter(([k])=>!skip.includes(k)&&r[k]).forEach(([k,v])=>{
+    const lbl = nice[k] || qLookup[k] || k.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+    txt += `${lbl}:\n  ${v}\n\n`;
+  });
+
+  const safeName = (r.photographer_name||'review').replace(/[^a-z0-9]/gi,'_');
+  const safeDate = (r.job_date||r.submitted_at||'').slice(0,10);
+  const filename = `review_${safeName}_${safeDate}.txt`;
+
+  const blob = new Blob([txt], {type:'text/plain'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href=url; a.download=filename; a.click();
+  URL.revokeObjectURL(url);
+  showToast('Record downloaded');
 }
 
 function deleteRecord(id, fromModal) {
