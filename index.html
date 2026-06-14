@@ -298,6 +298,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--paper); color: var(
           </div>
           <div style="display:flex;gap:8px;align-items:center">
             <span id="rec-count" style="font-size:0.8rem;color:var(--muted)"></span>
+            <button class="btn btn-secondary btn-sm" onclick="downloadAllRecords()">⬇ Download All</button>
             <button class="btn btn-secondary btn-sm" onclick="clearAll()">Clear All</button>
           </div>
         </div>
@@ -893,7 +894,7 @@ function submitForm(e) {
   fd.forEach((v,k)=>data[k]=v);
   const rVals = Object.entries(data).filter(([k,v])=>k!=='overall_score'&&!isNaN(v)&&v!=='').map(([,v])=>+v);
   const avg = rVals.length ? +(rVals.reduce((a,b)=>a+b,0)/rVals.length).toFixed(2) : null;
-  const rec = {id:Date.now(),type:curType,role:curRole,anonymous:anon[curType],avg_rating:avg,submitted_at:new Date().toISOString(),...data,reviewer_name:anon[curType]?'Anonymous':data.reviewer_name};
+  const rec = {id:Date.now(),type:curType,role:curRole,anonymous:anon[curType],avg_rating:avg,submitted_at:new Date().toISOString(),...data,reviewer_name:anon[curType]?'Anonymous':data.reviewer_name,_reviewer_name_real:data.reviewer_name||''};
   savePhotogName(data.photographer_name);
   showToast('Saving…');
   apiSaveReview(rec).then(ok => {
@@ -939,7 +940,7 @@ function _renderRecordsList(all) {
 
 function showDetail(id) {
   const r = getRecords().find(x=>x.id===id); if(!r) return;
-  const skip=['id','type','role','anonymous','submitted_at','avg_rating','__type'];
+  const skip=['id','type','role','anonymous','submitted_at','avg_rating','__type','_reviewer_name_real'];
   const nice={photographer_name:'Photographer',job_id:'Job ID',job_date:'Date',reviewer_name:'Reviewer',overall_score:'Overall Score',next_action:'Next Action'};
 
   // Build a name→label lookup from the actual question config for this record
@@ -952,9 +953,13 @@ function showDetail(id) {
   } catch(e) {}
 
   const rows=Object.entries(r).filter(([k])=>!skip.includes(k)&&r[k]).map(([k,v])=>{
-    // Priority: nice[] hardcoded names → question config label → humanize key (fallback)
-    const lbl = nice[k] || qLookup[k] || k.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
-    return `<div class="detail-row"><span class="detail-key">${lbl}</span><span class="detail-val">${h(v)}</span></div>`;
+    let lbl = nice[k] || qLookup[k] || k.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+    let val = h(v);
+    // Admins see the real name behind anonymous submissions
+    if (k === 'reviewer_name' && r.anonymous && sessionRole === 'admin' && r._reviewer_name_real) {
+      val = `Anonymous <span style="font-size:0.75rem;color:var(--muted);font-weight:400">(admin view: ${h(r._reviewer_name_real)})</span>`;
+    }
+    return `<div class="detail-row"><span class="detail-key">${lbl}</span><span class="detail-val">${val}</span></div>`;
   }).join('');
 
   const title = `${r.photographer_name} · ${ROLES[r.role]}`;
@@ -971,7 +976,7 @@ function showDetail(id) {
 
 function downloadReviewRecord(id) {
   const r = getRecords().find(x=>x.id===id); if(!r) return;
-  const skip=['id','type','role','anonymous','avg_rating','__type'];
+  const skip=['id','type','role','anonymous','avg_rating','__type','_reviewer_name_real'];
   const nice={photographer_name:'Photographer',job_id:'Job ID',job_date:'Date',reviewer_name:'Reviewer',overall_score:'Overall Score',next_action:'Next Action',submitted_at:'Submitted At'};
 
   // Build a name→label lookup from question config
@@ -1003,6 +1008,54 @@ function downloadReviewRecord(id) {
   a.href=url; a.download=filename; a.click();
   URL.revokeObjectURL(url);
   showToast('Record downloaded');
+}
+
+function downloadAllRecords() {
+  // Respect active filters — download what's currently shown
+  const all = getRecords();
+  const ft = document.getElementById('rf-type').value;
+  const fr = document.getElementById('rf-role').value;
+  const fp = document.getElementById('rf-photog').value;
+  const records = all.filter(r => (!ft||r.type===ft) && (!fr||r.role===fr) && (!fp||r.photographer_name===fp));
+
+  if (!records.length) { showToast('No records to download'); return; }
+
+  const skip = ['id','type','role','anonymous','avg_rating','__type','_reviewer_name_real'];
+  const nice = {photographer_name:'Photographer',job_id:'Job ID',job_date:'Date',reviewer_name:'Reviewer',overall_score:'Overall Score',next_action:'Next Action',submitted_at:'Submitted At'};
+
+  let txt = `STUDIO REVIEW EXPORT\n${'='.repeat(40)}\n`;
+  txt += `Exported: ${new Date().toLocaleString()}\n`;
+  txt += `Records: ${records.length}`;
+  if (ft||fr||fp) txt += ` (filtered)`;
+  txt += `\n${'='.repeat(40)}\n\n`;
+
+  for (const r of records) {
+    const qLookup = {};
+    try { const qs=getQs(r.type,r.role); for(const q of qs){if(q.name&&q.label)qLookup[q.name]=q.label;} } catch(e) {}
+    const typeLabel = r.type === 'prod' ? 'Production' : 'Trainer';
+    const roleLabel = ROLES[r.role] || r.role;
+    txt += `── ${typeLabel} Review — ${roleLabel} ──\n`;
+    Object.entries(r).filter(([k])=>!skip.includes(k)&&r[k]).forEach(([k,v])=>{
+      const lbl = nice[k] || qLookup[k] || k.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+      let val = v;
+      if (k === 'reviewer_name' && r.anonymous && sessionRole === 'admin' && r._reviewer_name_real) {
+        val = `Anonymous (admin: ${r._reviewer_name_real})`;
+      }
+      txt += `${lbl}: ${val}\n`;
+    });
+    txt += `\n`;
+  }
+
+  const datestamp = new Date().toISOString().slice(0,10);
+  const filterTag = fp ? `_${fp.replace(/[^a-z0-9]/gi,'_')}` : (fr ? `_${fr}` : '');
+  const filename = `reviews${filterTag}_${datestamp}.txt`;
+
+  const blob = new Blob([txt], {type:'text/plain'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href=url; a.download=filename; a.click();
+  URL.revokeObjectURL(url);
+  showToast(`Downloaded ${records.length} records`);
 }
 
 function deleteRecord(id, fromModal) {
