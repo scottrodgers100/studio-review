@@ -354,7 +354,7 @@ body { font-family: 'DM Sans', sans-serif; background: var(--paper); color: var(
 
         <div class="admin-section">
           <div class="admin-section-title">🔗 Bypass Links</div>
-          <p style="font-size:0.78rem;color:var(--muted);margin-bottom:14px">Set a secret token to create password-free links for reviewers. Anyone with the link goes straight to the specified form without seeing the login screen. Leave blank to disable bypass links entirely.</p>
+          <p style="font-size:0.78rem;color:var(--muted);margin-bottom:14px">Set a secret token to create password-free links for reviewers. The token is stored on the server so bypass links work from any device. Anyone with the link goes straight to the specified form without seeing the login screen. Leave blank to disable bypass links entirely.</p>
           <div class="field" style="margin-bottom:12px">
             <label>Bypass Token</label>
             <div style="display:flex;gap:8px">
@@ -1759,8 +1759,11 @@ function savePasswords() {
   else showToast('No changes made');
 }
 
-function renderBypassPanel() {
-  const token = localStorage.getItem('bypass_token') || '';
+async function renderBypassPanel() {
+  // Read token from server config (source of truth), fall back to localStorage
+  const cfg = await cfgGet();
+  const token = (cfg && cfg.bypass_token) ? cfg.bypass_token : (localStorage.getItem('bypass_token') || '');
+  if (token) localStorage.setItem('bypass_token', token); // keep local in sync
   const inp = document.getElementById('bypass-token-input');
   if (inp) inp.value = token;
   updateBypassPreview(token);
@@ -1806,20 +1809,28 @@ function generateBypassToken() {
   updateBypassPreview(token);
 }
 
-function saveBypassToken() {
+async function saveBypassToken() {
   const token = document.getElementById('bypass-token-input').value.trim();
   if (!token) { showToast('Enter a token first, or click Disable Bypass'); return; }
   localStorage.setItem('bypass_token', token);
   updateBypassPreview(token);
-  showToast('Bypass token saved');
+  showToast('Saving bypass token to server…');
+  const cfg = (await cfgGet()) || { __type: CFG_RECORD_TYPE, questions: {} };
+  cfg.bypass_token = token;
+  const ok = await cfgSet(cfg);
+  showCfgSyncBadge(ok ? '✓ Bypass token saved — links work from any device' : '⚠ Server sync failed — token saved locally only', !ok);
 }
 
-function clearBypassToken() {
+async function clearBypassToken() {
   if (!confirm('Disable bypass links? All existing bypass URLs will stop working.')) return;
   localStorage.removeItem('bypass_token');
   document.getElementById('bypass-token-input').value = '';
   document.getElementById('bypass-links-preview').style.display = 'none';
-  showToast('Bypass links disabled');
+  showToast('Disabling bypass links on server…');
+  const cfg = (await cfgGet()) || { __type: CFG_RECORD_TYPE, questions: {} };
+  delete cfg.bypass_token;
+  const ok = await cfgSet(cfg);
+  showCfgSyncBadge(ok ? '✓ Bypass links disabled for all devices' : '⚠ Server sync failed — disabled locally only', !ok);
 }
 
 // INIT
@@ -1892,6 +1903,9 @@ async function syncConfigFromServer() {
   }
   if (cfg.roles) { localStorage.setItem('role_list', JSON.stringify(cfg.roles)); console.log('[CFG] applied roles'); }
   if (cfg.sections) { localStorage.setItem('sidebar_sections', JSON.stringify(cfg.sections)); console.log('[CFG] applied sections'); }
+  // Sync bypass token so local fallback stays current
+  if (cfg.bypass_token) { localStorage.setItem('bypass_token', cfg.bypass_token); }
+  else { localStorage.removeItem('bypass_token'); }
   console.log('[CFG] syncConfigFromServer done');
 }
 
@@ -2021,15 +2035,28 @@ window.saveSectionsAdmin = function() {
 
 // ── Bypass link: ?bypass=TOKEN&type=prod&role=senior ─────────────────────────
 // Skips the password screen and lands directly on the specified form.
-// Token is set in Admin → Bypass Link. type defaults to 'prod', role to 'senior'.
+// Token is validated against the server config (JSONBin) so it works from any device.
 // Example URL: https://yoursite.netlify.app/?bypass=abc123&type=prod&role=senior
-(function checkBypassLink() {
+(async function checkBypassLink() {
   const params = new URLSearchParams(location.search);
   const token = params.get('bypass');
   if (!token) return;
 
-  const stored = localStorage.getItem('bypass_token') || '';
-  if (!stored || token !== stored) return; // wrong or unset token — fall through to login
+  // Validate against server config first, then fall back to localStorage
+  let storedToken = '';
+  try {
+    const cfg = await cfgGet();
+    if (cfg && cfg.bypass_token) {
+      storedToken = cfg.bypass_token;
+      localStorage.setItem('bypass_token', storedToken); // keep local in sync
+    } else {
+      storedToken = localStorage.getItem('bypass_token') || '';
+    }
+  } catch(e) {
+    storedToken = localStorage.getItem('bypass_token') || '';
+  }
+
+  if (!storedToken || token !== storedToken) return; // wrong or unset token — fall through to login
 
   const type = params.get('type') || 'prod';
   const role = params.get('role') || 'senior';
